@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<Substance xmlns="uri:/mil/tatrc/physiology/datamodel" contentVersion="Biogears_7.5.0+85" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="uri:/mil/tatrc/physiology/datamodel BioGearsDataModel.xsd">
+  <Name>Sarin</Name>
+  <Density readOnly="false" unit="kg/m^3" value="1100"/>
+  <MolarMass readOnly="false" unit="g/mol" value="140.1"/>
+  <State>Liquid</State>
+  <Aerosolization>
+    <BronchioleModifier readOnly="false" value="0"/>
+    <InflammationCoefficient readOnly="false" value="1"/>
+    <ParticulateSizeDistribution DependentUnit="" IndependentUnit="um">
+      <Dependent>
+        <DoubleList>0.895 0.10 0.005</DoubleList>
+      </Dependent>
+      <Independent>
+        <DoubleList>1e-05 0.0001 0.001 0.01</DoubleList>
+      </Independent>
+    </ParticulateSizeDistribution>
+  </Aerosolization>
+  <Clearance>
+    <Systemic>
+      <FractionExcretedInFeces readOnly="false" value="0"/>
+      <FractionUnboundInPlasma readOnly="false" value="0.3"/>
+      <IntrinsicClearance readOnly="false" unit="mL/min kg" value="0"/>
+      <RenalClearance readOnly="false" unit="mL/min kg" value="0"/>
+      <SystemicClearance readOnly="false" unit="mL/min kg" value="4"/>
+    </Systemic>
+  </Clearance>
+  <Pharmacokinetics>
+    <TissueKinetics>
+      <Name>BoneTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.25"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>BrainTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.35"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>FatTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.61"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>GutTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.375"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>LeftKidneyTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.34"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>LeftLungTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.325"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>LiverTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.36"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>MuscleTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.32"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>MyocardiumTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.39"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>RightKidneyTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.34"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>RightLungTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.325"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>SkinTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.45"/>
+    </TissueKinetics>
+    <TissueKinetics>
+      <Name>SpleenTissue</Name>
+      <PartitionCoefficient readOnly="false" value="0.38"/>
+    </TissueKinetics>
+  </Pharmacokinetics>
+  <Pharmacodynamics>
+    <EffectSiteRateConstant readOnly="false" unit="1/min" value="0"/>
+    <EMaxShapeParameter readOnly="false" value="1"/>
+    <AntibacterialEffect readOnly="false" unit="1/hr" value="0"/>
+    <Bronchodilation>
+      <EMax readOnly="false" value="-0.8"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </Bronchodilation>
+    <CentralNervousModifier>
+      <EMax readOnly="false" value="1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </CentralNervousModifier>
+    <DiastolicPressureModifier>
+      <EMax readOnly="false" value="-0.1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </DiastolicPressureModifier>
+    <FeverModifier>
+      <EMax readOnly="false" value="0"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0"/>
+    </FeverModifier>
+    <HeartRateModifier>
+      <EMax readOnly="false" value="-0.1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </HeartRateModifier>
+    <HemorrhageModifier>
+      <EMax readOnly="false" value="0"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0"/>
+    </HemorrhageModifier>
+    <NeuromuscularBlock>
+      <EMax readOnly="false" value="0"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0"/>
+    </NeuromuscularBlock>
+    <PainModifier>
+      <EMax readOnly="false" value="1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </PainModifier>
+    <PupilReactivityModifier>
+      <EMax readOnly="false" value="-1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="500"/>
+    </PupilReactivityModifier>
+    <PupilSizeModifier>
+      <EMax readOnly="false" value="-1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="500"/>
+    </PupilSizeModifier>
+    <RespirationRateModifier>
+      <EMax readOnly="false" value="1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </RespirationRateModifier>
+    <Sedation>
+      <EMax readOnly="false" value="0"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0"/>
+    </Sedation>
+    <SystolicPressureModifier>
+      <EMax readOnly="false" value="-0.1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </SystolicPressureModifier>
+    <TidalVolumeModifier>
+      <EMax readOnly="false" value="1"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0.5"/>
+    </TidalVolumeModifier>
+    <TubularPermeabilityModifier>
+      <EMax readOnly="false" value="0"/>
+      <EC50 readOnly="false" unit="ug/mL" value="0"/>
+    </TubularPermeabilityModifier>
+  </Pharmacodynamics>
+</Substance>

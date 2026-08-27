@@ -1,0 +1,79 @@
+<!--
+Copyright 2015 Applied Research Associates, Inc.
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the License
+at:
+http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software distributed under
+the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+-->
+<!-- @brief A collection of data and instructions to be executed by a physiology engine  -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="uri:/mil/tatrc/physiology/datamodel" xmlns="uri:/mil/tatrc/physiology/datamodel" elementFormDefault="qualified">
+
+  <xs:include schemaLocation="Patient.xsd"/>
+  <xs:include schemaLocation="EngineConfiguration.xsd"/>
+  <xs:include schemaLocation="Actions.xsd"/>
+  <xs:include schemaLocation="Conditions.xsd"/>
+  <xs:include schemaLocation="DataRequests.xsd"/>
+
+  <!-- @brief  A set of instructions used to execute an engine, and write out a data file. -->
+  <xs:complexType name="ScenarioData">
+    <xs:complexContent>
+      <xs:extension base="ObjectData">
+        <xs:sequence>
+          <xs:element name="Name" type="xs:string" minOccurs="0" maxOccurs="1"/>
+          <xs:element name="Description" type="xs:string" minOccurs="0" maxOccurs="1"/>
+          <xs:choice minOccurs="1" maxOccurs="1">
+            <xs:element name="EngineStateFile" type="xs:string"/>
+            <xs:element name="InitialParameters" type="ScenarioInitialParametersData"/>
+          </xs:choice>
+          <xs:element name="AutoSerialization" type="ScenarioAutoSerializationData" minOccurs="0" maxOccurs="1"/>
+          <xs:element name="DataRequests" type="DataRequestManagerData" minOccurs="0" maxOccurs="1"/>
+          <xs:element name="Actions" type="ActionListData" minOccurs="1" maxOccurs="1"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="Scenario" type="ScenarioData"/>
+
+  <xs:complexType name="ScenarioInitialParametersData">
+    <xs:complexContent>
+      <xs:extension base="ObjectData">
+        <xs:sequence>
+          <xs:choice minOccurs="1" maxOccurs="1">
+            <xs:element name="Patient" type="PatientData"/>
+            <xs:element name="PatientFile" type="xs:string"/>
+          </xs:choice>
+          <xs:element name="TrackStabilization" type="enumOnOff" minOccurs="0" maxOccurs="1"/>
+          <xs:element name="Condition" type="ConditionData" minOccurs="0" maxOccurs="unbounded"/>
+          <xs:element name="Configuration" type="PhysiologyEngineConfigurationData" minOccurs="0" maxOccurs="1"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+
+  <!-- @brief Set a timer to serialize state during the execution. -->
+  <xs:complexType name="ScenarioAutoSerializationData">
+    <xs:complexContent>
+      <xs:extension base="ObjectData">
+        <xs:sequence>
+          <xs:element name="Directory"        type="xs:string"      minOccurs="1" maxOccurs="1"/>
+          <!-- @brief The location of the state file being written to. -->
+          <xs:element name="FileName"         type="xs:string"      minOccurs="1" maxOccurs="1"/>
+          <!-- @brief The file name of the state file being written to. -->
+          <xs:element name="AfterActions"     type="enumOnOff"      minOccurs="1" maxOccurs="1"/>
+          <!-- @brief Save state after an action is added to the action manager, then again after it is processed. (These states are always time stamped.) -->
+          <xs:element name="Period"           type="ScalarTimeData" minOccurs="1" maxOccurs="1"/>
+          <!-- @brief The frequency at which to write a file, 1s would write a file every second. 0 will not save out at all (if you wanted after actions only.) -->
+          <xs:element name="PeriodTimeStamps" type="enumOnOff"      minOccurs="1" maxOccurs="1"/>
+          <!-- @brief Put a time stamp at the end of the period state filename, Off will overwrite the same individual file, On will create new files every period, named with the simulation time. -->
+          <xs:element name="ReloadState"      type="enumOnOff"      minOccurs="1" maxOccurs="1"/>
+          <!-- @brief Load the data back into the engine, this is primarily used for testing -->
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  
+</xs:schema>

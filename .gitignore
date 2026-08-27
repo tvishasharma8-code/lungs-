@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Unity generated / regenerable. Library alone is 14.4 GB here and is rebuilt
+# from Assets + ProjectSettings on first open, so it must never be committed.
+# ---------------------------------------------------------------------------
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+/.utmp/
+
+# Asset Store downloads
+/[Aa]ssets/AssetStoreTools*
+
+# Visual Studio / Rider / VS Code generated project files
+.vs/
+.idea/
+/*.csproj
+/*.unityproj
+/*.sln
+/*.suo
+/*.user
+/*.userprefs
+/*.pidb
+/*.booproj
+/*.svd
+/*.pdb.meta
+/*.mdb.meta
+
+# Build outputs
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Crash / profiler dumps
+sysinfo.txt
+crashlytics-build.properties
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Project specific
+# ---------------------------------------------------------------------------
+# BioGears writes this at runtime whenever the engine starts. It is a physiology
+# log, not source, and it changes on every Play.
+/Assets/StreamingAssets/BioGears/biogears_unity.log
+/Assets/StreamingAssets/BioGears/biogears_unity.log.meta
+
+# Editor-recovery scene snapshots
+/Assets/_Recovery/
+
+# IL2CPP build backup Unity leaves behind after an Android/IL2CPP build. ~1.1 GB of
+# generated C++ - Unity's own folder name says not to ship it.
+*_BackUpThisFolder_ButDontShipItWithYourGame/
+*_BurstDebugInformation_DoNotShip/

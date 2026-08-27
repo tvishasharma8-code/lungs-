@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<Substance xmlns="uri:/mil/tatrc/physiology/datamodel" contentVersion="Biogears_7.5.0+85" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="uri:/mil/tatrc/physiology/datamodel BioGearsDataModel.xsd">
+  <Name>Insulin</Name>
+  <MolarMass readOnly="false" unit="g/mol" value="5808"/>
+  <State>Liquid</State>
+  <Clearance>
+    <Systemic>
+      <FractionExcretedInFeces readOnly="false" value="0"/>
+      <FractionUnboundInPlasma readOnly="false" value="1"/>
+      <IntrinsicClearance readOnly="false" unit="mL/min kg" value="0"/>
+      <RenalClearance readOnly="false" unit="mL/min kg" value="0"/>
+      <SystemicClearance readOnly="false" unit="mL/min kg" value="15.7"/>
+    </Systemic>
+  </Clearance>
+</Substance>

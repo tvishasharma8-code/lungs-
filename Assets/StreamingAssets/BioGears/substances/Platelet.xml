@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<Substance xmlns="uri:/mil/tatrc/physiology/datamodel" contentVersion="Biogears_7.5.0+85" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="uri:/mil/tatrc/physiology/datamodel BioGearsDataModel.xsd">
+  <Name>Platelet</Name>
+  <Classification>WholeBlood</Classification>
+  <Density readOnly="false" unit="g/mL" value="1.06"/>
+  <MolarMass readOnly="false" unit="g/mol" value="2.12e+15"/>
+  <State>Molecular</State>
+  <Clearance>
+    <CellRegulation>
+      <CellDeathRate readOnly="false" unit="1/s" value="4630000"/>
+      <CellBirthRate readOnly="false" unit="1/s" value="4630000"/>
+    </CellRegulation>
+  </Clearance>
+</Substance>

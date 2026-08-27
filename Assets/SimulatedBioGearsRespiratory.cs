@@ -99,6 +99,28 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
         UpdateBreathingCycle(deltaTime);
     }
 
+    /// <summary>
+    /// Sets the resting respiratory rate (breaths/min). Conditions still modify this
+    /// on top, so it acts as the patient's baseline rather than a hard override.
+    /// Drives breathing frequency in the visualisation.
+    /// </summary>
+    public void SetBaseRespirationRate(float breathsPerMinute)
+    {
+        baseRespirationRate = Mathf.Clamp(breathsPerMinute, 4f, 40f);
+    }
+
+    /// <summary>
+    /// Sets the resting tidal volume (mL) - the air moved per breath. Drives how far
+    /// the lung visibly inflates on each cycle.
+    /// </summary>
+    public void SetBaseTidalVolume(float milliliters)
+    {
+        baseTidalVolume = Mathf.Clamp(milliliters, 150f, 1200f);
+    }
+
+    public float BaseRespirationRate => baseRespirationRate;
+    public float BaseTidalVolume => baseTidalVolume;
+
     public void ApplyCondition(string conditionName, float severity)
     {
         severity = Mathf.Clamp01(severity);
@@ -221,6 +243,7 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
         // Hermite interpolation for smooth acceleration/deceleration
         return t * t * (3f - 2f * t);
     }
+
 
     // Debug visualization in Unity Editor
     void OnGUI()
