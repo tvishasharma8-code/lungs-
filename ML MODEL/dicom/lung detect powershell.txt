@@ -1,0 +1,137 @@
+lung detect powershell
+
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+PS C:\Users\Adminstrator> cd "C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122"
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122>    python -c "import pydicom; d = pydicom.dcmread('ee758524-22a5-40b9-b424-37071fd8544....dcm'); print(d.SOPInstanceUID)"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'pydicom'
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> pip install pydicom
+Collecting pydicom
+  Downloading pydicom-3.0.2-py3-none-any.whl.metadata (9.4 kB)
+Downloading pydicom-3.0.2-py3-none-any.whl (2.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.4/2.4 MB 8.0 MB/s eta 0:00:00
+Installing collected packages: pydicom
+Successfully installed pydicom-3.0.2
+
+[notice] A new release of pip is available: 24.0 -> 26.2.1
+[notice] To update, run: python.exe -m pip install --upgrade pip
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python -c "import pydicom; d = pydicom.dcmread('ee758524-22a5-40b9-b424-37071fd8544....dcm'); print(d.SOPInstanceUID)"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "C:\Users\Adminstrator\AppData\Local\Programs\Python\Python311\Lib\site-packages\pydicom\filereader.py", line 1042, in dcmread
+    fp = open(fp, "rb")
+         ^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'ee758524-22a5-40b9-b424-37071fd8544....dcm'
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python -c "import pydicom, glob; f = glob.glob('*.dcm')[0]; d = pydicom.dcmread(f); print('File:', f); print('SOPInstanceUID:', d.SOPInstanceUID)"
+File: 0170b317-754b-4ccc-814f-c1ad8e5d5526.dcm
+SOPInstanceUID: 1.3.6.1.4.1.14519.5.2.1.6655.2359.335946449514149709248981061481
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122>    notepad match_check.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122>    python match_check.py
+Found 244 DICOM files
+Found 139 XML annotation files
+
+Matched (has tumor annotation): 27
+Unmatched (no annotation, presumably no tumor): 217
+
+First 5 matched examples:
+  ('01d2c9c3-34ff-4cd7-9fa2-b70940b2f419.dcm', '1.3.6.1.4.1.14519.5.2.1.6655.2359.242590255988274321513010606547')
+  ('0de34b50-5eb1-4108-bba3-e691c079e18f.dcm', '1.3.6.1.4.1.14519.5.2.1.6655.2359.291998117285159451294704215961')
+  ('0e0a20b0-421f-4d01-bc85-11dd07303f9a.dcm', '1.3.6.1.4.1.14519.5.2.1.6655.2359.378704631853526165843587152527')
+  ('20224f93-25a4-4866-ab2c-ec7150910845.dcm', '1.3.6.1.4.1.14519.5.2.1.6655.2359.165131048794994969203815811043')
+  ('205fc39b-a0e4-412e-b142-01671d9d68c4.dcm', '1.3.6.1.4.1.14519.5.2.1.6655.2359.978359324621792509601564268234')
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122>    notepad match_check.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122>    python match_check.py
+Saved 244 entries to dataset_index.json
+Tumor slices: 27
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> notepad prepare_images.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> pip install pillow numpy
+Collecting pillow
+  Using cached pillow-12.3.0-cp311-cp311-win_amd64.whl.metadata (9.3 kB)
+Requirement already satisfied: numpy in c:\users\adminstrator\appdata\local\programs\python\python311\lib\site-packages (2.4.6)
+Using cached pillow-12.3.0-cp311-cp311-win_amd64.whl (7.2 MB)
+Installing collected packages: pillow
+Successfully installed pillow-12.3.0
+
+[notice] A new release of pip is available: 24.0 -> 26.2.1
+[notice] To update, run: python.exe -m pip install --upgrade pip
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python prepare_images.py
+Exported 244 PNG images to C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122\png_export
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> notepad verify_box.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python verify_box.py
+Saved verification image: verify_box_check.png
+Slice used: 01d2c9c3-34ff-4cd7-9fa2-b70940b2f419.dcm
+Box(es): [{'xmin': 333, 'ymin': 293, 'xmax': 385, 'ymax': 333}]
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> notepad split_data.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python split_data.py
+Train: 194 total (21 tumor, 173 normal)
+Test: 50 total (6 tumor, 44 normal)
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> pip install torch torchvision
+Collecting torch
+  Using cached torch-2.13.0-cp311-cp311-win_amd64.whl.metadata (39 kB)
+Collecting torchvision
+  Using cached torchvision-0.28.0-cp311-cp311-win_amd64.whl.metadata (5.6 kB)
+Collecting filelock (from torch)
+  Downloading filelock-3.32.4-py3-none-any.whl.metadata (2.0 kB)
+Requirement already satisfied: typing-extensions>=4.10.0 in c:\users\adminstrator\appdata\roaming\python\python311\site-packages (from torch) (4.15.0)
+Collecting setuptools>=77.0.3 (from torch)
+  Using cached setuptools-84.0.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting sympy>=1.13.3 (from torch)
+  Using cached sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+Collecting networkx>=2.5.1 (from torch)
+  Using cached networkx-3.6.1-py3-none-any.whl.metadata (6.8 kB)
+Collecting jinja2 (from torch)
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Requirement already satisfied: fsspec>=0.8.5 in c:\users\adminstrator\appdata\local\programs\python\python311\lib\site-packages (from torch) (2026.1.0)
+Requirement already satisfied: numpy in c:\users\adminstrator\appdata\local\programs\python\python311\lib\site-packages (from torchvision) (2.4.6)
+Requirement already satisfied: pillow!=8.3.*,>=5.3.0 in c:\users\adminstrator\appdata\local\programs\python\python311\lib\site-packages (from torchvision) (12.3.0)
+Collecting mpmath<1.4,>=1.1.0 (from sympy>=1.13.3->torch)
+  Using cached mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+Collecting MarkupSafe>=2.0 (from jinja2->torch)
+  Using cached markupsafe-3.0.3-cp311-cp311-win_amd64.whl.metadata (2.8 kB)
+Using cached torch-2.13.0-cp311-cp311-win_amd64.whl (122.0 MB)
+Using cached torchvision-0.28.0-cp311-cp311-win_amd64.whl (3.8 MB)
+Using cached networkx-3.6.1-py3-none-any.whl (2.1 MB)
+Using cached setuptools-84.0.0-py3-none-any.whl (818 kB)
+Using cached sympy-1.14.0-py3-none-any.whl (6.3 MB)
+Downloading filelock-3.32.4-py3-none-any.whl (99 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 99.9/99.9 kB 1.4 MB/s eta 0:00:00
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Using cached markupsafe-3.0.3-cp311-cp311-win_amd64.whl (15 kB)
+Using cached mpmath-1.3.0-py3-none-any.whl (536 kB)
+Installing collected packages: mpmath, sympy, setuptools, networkx, MarkupSafe, filelock, jinja2, torch, torchvision
+  Attempting uninstall: setuptools
+    Found existing installation: setuptools 65.5.0
+    Uninstalling setuptools-65.5.0:
+      Successfully uninstalled setuptools-65.5.0
+Successfully installed MarkupSafe-3.0.3 filelock-3.32.4 jinja2-3.1.6 mpmath-1.3.0 networkx-3.6.1 setuptools-84.0.0 sympy-1.14.0 torch-2.13.0 torchvision-0.28.0
+
+[notice] A new release of pip is available: 24.0 -> 26.2.1
+[notice] To update, run: python.exe -m pip install --upgrade pip
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> notepad train_model.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python train_model.py
+Downloading: "https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth" to C:\Users\Adminstrator/.cache\torch\hub\checkpoints\fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+100.0%
+Using device: cpu
+Epoch 1/5 - Loss: 4.0761
+Epoch 2/5 - Loss: 2.2207
+Epoch 3/5 - Loss: 1.8998
+Epoch 4/5 - Loss: 1.7439
+Epoch 5/5 - Loss: 1.5244
+Saved model to tumor_model.pth
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> notepad test_model.py
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122> python test_model.py
+Downloading: "https://download.pytorch.org/models/resnet50-0676ba61.pth" to C:\Users\Adminstrator/.cache\torch\hub\checkpoints\resnet50-0676ba61.pth
+100.0%
+Saved predictions/test_0.png - 1 raw predictions, 1 above 0.5 confidence
+Saved predictions/test_1.png - 1 raw predictions, 1 above 0.5 confidence
+Saved predictions/test_2.png - 1 raw predictions, 1 above 0.5 confidence
+Saved predictions/test_3.png - 1 raw predictions, 1 above 0.5 confidence
+Saved predictions/test_4.png - 1 raw predictions, 1 above 0.5 confidence
+Saved predictions/test_5.png - 2 raw predictions, 1 above 0.5 confidence
+
+Done! Check the 'predictions' folder.
+Green box = actual tumor location. Red box = model's guess.
+PS C:\Users\Adminstrator\Downloads\lung_pet_ct_dx\Lung_Dx-A0265\46386\72122>
