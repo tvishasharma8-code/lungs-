@@ -1,0 +1,17 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Backend
+backend/__pycache__/
+backend/**/__pycache__/
+backend/temp/uploads/*
+backend/temp/workspace/*
+backend/temp/output/*
+!backend/temp/**/.gitkeep
+backend/logs/*.log
+backend/.venv/
+backend/pipeline/weights/*.pth
+
+# OS
+.DS_Store

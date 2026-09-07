@@ -1,0 +1,18 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.9.2
+
+# --- CT / segmentation pipeline dependencies (from run_totalseg.py) ---
+numpy>=1.24
+nibabel>=5.2
+trimesh>=4.4
+scikit-image>=0.24
+dicom2nifti>=2.4.10
+pydicom>=2.4
+TotalSegmentator>=2.4.0
+
+# --- AI abnormality detection (Faster R-CNN tumor/nodule model) ---
+torch>=2.1
+torchvision>=0.16
+Pillow>=10.0
