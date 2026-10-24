@@ -55,7 +55,7 @@ from pydicom import dcmread
 # Filename matches what the team currently hands off. If a future
 # retrain produces a differently-named file, either rename it to this
 # on copy, or update this constant.
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "weights", "tumor_model_v4.pth")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "weights", "tumor_model_v5.pth")
 NUM_CLASSES = 2  # background + tumor
 CLASS_NAMES = {1: "Tumor"}
 
