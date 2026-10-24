@@ -78,19 +78,19 @@ def run_pipeline(
     Run the full DICOM -> NIfTI -> TotalSegmentator -> STL pipeline.
 
     dicom_dir:      folder containing the uploaded DICOM files for one
-                     patient/session (may contain multiple series; the
-                     largest series is auto-selected, same as before).
-    workspace_dir:   a per-job scratch directory. NIfTI and raw
-                     TotalSegmentator outputs are written here. The
-                     caller is responsible for deleting this directory
-                     once the job is done (see services/stl_service.py).
-    out_stl_path:    final .stl file destination.
-    log:             callable for human-readable log lines.
-    progress:        callable invoked as the pipeline advances, used to
-                     drive the frontend's live progress list.
-    fast:            if True, passes --fast to TotalSegmentator. Kept
-                     False by default to match the original script,
-                     which explicitly avoids --fast for accuracy.
+                    patient/session (may contain multiple series; the
+                    largest series is auto-selected, same as before).
+    workspace_dir:  a per-job scratch directory. NIfTI and raw
+                    TotalSegmentator outputs are written here. The
+                    caller is responsible for deleting this directory
+                    once the job is done (see services/analysis_service.py).
+    out_stl_path:   final .stl file destination.
+    log:            callable for human-readable log lines.
+    progress:       callable invoked as the pipeline advances, used to
+                    drive the frontend's live progress list.
+    fast:           if True, passes --fast to TotalSegmentator. Kept
+                    False by default to match the original script,
+                    which explicitly avoids --fast for accuracy.
     """
     start = time.time()
     os.makedirs(workspace_dir, exist_ok=True)
@@ -177,6 +177,13 @@ def run_pipeline(
             "-o", seg_dir,
             "--roi_subset",
             *ROI_SUBSET,
+            # Saving masks uses parallel worker processes by default, each
+            # holding a full copy of the volume in memory. On CPU-only /
+            # memory-constrained machines that throws a MemoryError even
+            # after prediction succeeds, so force single-threaded
+            # resampling/saving here - slower, but far less memory-hungry.
+            "--nr_thr_resamp", "1",
+            "--nr_thr_saving", "1",
         ]
         if fast:
             cmd.append("--fast")
@@ -195,9 +202,8 @@ def run_pipeline(
             line = line.rstrip()
             if line:
                 log(f"[TotalSegmentator] {line}")
-            # TotalSegmentator emits tqdm-style "NN%" progress lines;
-            # nudge our reported percent up when we see them, otherwise
-            # just creep forward so the UI doesn't look frozen.
+            # Creep the reported percent forward on each output line so
+            # the UI doesn't look frozen during the long prediction step.
             last_pct = min(last_pct + 1, 95)
             progress("segmentation", line or "Running segmentation model", last_pct)
 
