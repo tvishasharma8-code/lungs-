@@ -72,6 +72,44 @@ Shader "BioGears/LungTissue"
         _ScarColor("Fibrotic Scar", Color) = (0.760, 0.716, 0.640, 1)
         _InflamedColor("Inflamed Tissue", Color) = (0.600, 0.240, 0.220, 1)
 
+        // --- asthma -----------------------------------------------------------------
+        // Asthma is an airway disease, so its signs are centred on the trachea, main
+        // bronchi and hilum rather than spread over the pleura. Those structures sit on
+        // the lungs' central vertical axis, so "airway-ness" is the distance from that
+        // axis, normalised by the widest radial extent. Both set from C#.
+        _AsthmaSeverity("Asthma Severity", Range(0,1)) = 0
+        // Its own colour rather than _InflamedColor: that one is a muted red-brown close
+        // to healthy tissue, so asthma read as barely there. Inflamed, hyperaemic airway
+        // mucosa is a much more saturated red.
+        _AsthmaColor("Asthma - Inflamed Airways", Color) = (0.80, 0.10, 0.11, 1)
+        _LungUpOS("Lung Up Axis (object space)", Vector) = (0,1,0,0)
+        _LungRadialExtent("Lung Radial Extent (object units)", Float) = 1
+
+        // --- pneumonia and ARDS -----------------------------------------------------
+        // Lobar pneumonia consolidates one lobe - most often the right lower lobe - into
+        // dense, airless, dusky-red tissue ("red hepatization"); it climbs higher with
+        // severity. ARDS is diffuse and bilateral: wet, heavy, dusky lungs, worst in the
+        // lower (dependent) regions. _LungLateralOS points toward the anatomical right
+        // (the larger lung); _LungHeightRange is the min/max height along _LungUpOS.
+        _PneumoniaSeverity("Pneumonia Severity", Range(0,1)) = 0
+        // Fraction of each lung BioGears has consolidated, from the loaded patient. The
+        // consolidation rises from that lung's base to this fraction of its height.
+        _PneumoniaLeft("Pneumonia - Left Lung Affected", Range(0,1)) = 0
+        _PneumoniaRight("Pneumonia - Right Lung Affected", Range(0,1)) = 0
+        _ArdsSeverity("ARDS Severity", Range(0,1)) = 0
+        _LungLateralOS("Lung Right Axis (object space)", Vector) = (1,0,0,0)
+        _LungHeightRange("Lung Height Range (min, max)", Vector) = (-1,1,0,0)
+        _PneumoniaColor("Pneumonia - Consolidated Lobe", Color) = (0.46, 0.09, 0.09, 1)
+        _ArdsColor("ARDS - Wet, Congested Tissue", Color) = (0.42, 0.14, 0.20, 1)
+
+        // --- teaching highlight -----------------------------------------------------
+        // Pulsing glow over the regions each disease affects. 0 = off, 1 = on; C#
+        // fades between them.
+        _HighlightAmount("Highlight Affected Regions", Range(0,1)) = 0
+        [HDR] _AsthmaHighlightColor("Highlight - Asthma Airways", Color) = (1.0, 0.50, 0.08, 1)
+        [HDR] _CopdHighlightColor("Highlight - COPD / Smoke Damage", Color) = (0.60, 0.30, 1.0, 1)
+        [HDR] _InfectionHighlightColor("Highlight - Pneumonia / ARDS", Color) = (0.30, 1.0, 0.45, 1)
+
         // --- GPU breathing ----------------------------------------------------------
         // The same radial expansion LungMeshDeformer used to compute on the CPU, moved
         // into the vertex shader. Identical maths: normalize(pos - centre), scaled per
@@ -118,6 +156,22 @@ Shader "BioGears/LungTissue"
             half4  _ScarColor;
             half4  _InflamedColor;
             half   _Damage01;
+            half   _AsthmaSeverity;
+            half4  _AsthmaColor;
+            float4 _LungUpOS;
+            float  _LungRadialExtent;
+            half   _HighlightAmount;
+            half4  _AsthmaHighlightColor;
+            half4  _CopdHighlightColor;
+            half4  _InfectionHighlightColor;
+            half   _PneumoniaSeverity;
+            half   _PneumoniaLeft;
+            half   _PneumoniaRight;
+            half   _ArdsSeverity;
+            float4 _LungLateralOS;
+            float4 _LungHeightRange;
+            half4  _PneumoniaColor;
+            half4  _ArdsColor;
             float  _BreathExpansion;
             float4 _BreathCentre;
             float4 _BreathAxisScale;
@@ -307,6 +361,47 @@ Shader "BioGears/LungTissue"
                 half3 grey = dot(albedo.rgb, half3(0.299h, 0.587h, 0.114h)).xxx;
                 albedo.rgb = lerp(albedo.rgb, grey * 0.62h, emph * 0.55h);
 
+                // ---- asthma: airway-centred inflammation ---------------------------
+                // Rest pose (positionOS), so the region stays fixed to the tissue while
+                // the lung breathes. The inflammation susceptibility channel breaks the
+                // edge up so it reads as tissue, not a painted ring.
+                float3 up = normalize(_LungUpOS.xyz);
+                float3 rel = input.positionOS - _BreathCentre.xyz;
+                float radial = length(rel - dot(rel, up) * up) / max(_LungRadialExtent, 1e-4);
+                half airway = (1.0h - smoothstep(0.20h, 0.62h, (half)radial)) * lerp(0.65h, 1.0h, dmg.b);
+                half severity = saturate(_AsthmaSeverity);
+                // Steeper than linear so a moderate attack (~0.7) is already clearly red.
+                half asthma = airway * saturate(severity * 1.5h);
+                albedo.rgb = lerp(albedo.rgb, _AsthmaColor.rgb, asthma * 0.85h);
+                // Asthma also inflames the small airways throughout the lung, so the
+                // rest of the tissue takes on a faint flush too - weaker than the airways.
+                albedo.rgb = lerp(albedo.rgb, _AsthmaColor.rgb, severity * (1.0h - airway) * 0.18h);
+
+                // ---- pneumonia: consolidation in whichever lungs the patient has ----
+                // Each lung is filled from its base up to the fraction BioGears says is
+                // affected (BioGears gives per-lung fractions, not lobes, so "from the
+                // base" - where lobar pneumonia most often starts - is the placement).
+                // A lung with 0 affected stays clear.
+                float lateral = dot(rel, normalize(_LungLateralOS.xyz)) / max(_LungRadialExtent, 1e-4);
+                float heightN = saturate((dot(rel, up) - _LungHeightRange.x)
+                                         / max(_LungHeightRange.y - _LungHeightRange.x, 1e-4));
+                half pnSev = saturate(_PneumoniaSeverity);
+                half rightSide = smoothstep(0.12h, 0.32h, (half)lateral);
+                half leftSide = smoothstep(0.12h, 0.32h, (half)-lateral);
+                half fracR = saturate(_PneumoniaRight);
+                half fracL = saturate(_PneumoniaLeft);
+                half rightLobe = (1.0h - smoothstep(fracR - 0.08h, fracR + 0.08h, (half)heightN)) * saturate(fracR * 8.0h);
+                half leftLobe = (1.0h - smoothstep(fracL - 0.08h, fracL + 0.08h, (half)heightN)) * saturate(fracL * 8.0h);
+                half pneumonia = saturate(rightSide * rightLobe + leftSide * leftLobe)
+                               * lerp(0.70h, 1.0h, dmg.b) * saturate(pnSev * 1.6h);
+                albedo.rgb = lerp(albedo.rgb, _PneumoniaColor.rgb, pneumonia * 0.85h);
+
+                // ---- ARDS: diffuse, bilateral, worst at the bases ------------------
+                half ardsSev = saturate(_ArdsSeverity);
+                half dependent = lerp(0.55h, 1.0h, 1.0h - (half)heightN);
+                half ards = ardsSev * dependent * lerp(0.75h, 1.0h, dmg.r);
+                albedo.rgb = lerp(albedo.rgb, _ArdsColor.rgb, ards * 0.70h);
+
                 // Mask: gloss and cavity shading, both keyed to the baked relief so a
                 // fissure is simultaneously duller and darker - which is what stops the
                 // surface reading as one uniformly polished object.
@@ -318,6 +413,12 @@ Shader "BioGears/LungTissue"
                 // inflamed patches glossier instead. Both are local, never global.
                 smoothness = lerp(smoothness, smoothness * 0.45h, saturate(pigment + scar));
                 smoothness = lerp(smoothness, 0.62h, inflame * 0.55h);
+                // Mucus over inflamed airways: wet and glossy.
+                smoothness = lerp(smoothness, 0.70h, asthma * 0.60h);
+                // A consolidated lobe is solid and matte; ARDS lungs are wet and shiny.
+                smoothness = lerp(smoothness, smoothness * 0.5h, pneumonia);
+                smoothness = lerp(smoothness, 0.68h, ards * 0.55h);
+                occlusion *= lerp(1.0h, 0.82h, pneumonia);
                 // Damaged regions read denser, so they occlude a little more.
                 occlusion *= lerp(1.0h, 0.80h, saturate(pigment * 0.7h + emph * 0.5h));
 
@@ -327,7 +428,18 @@ Shader "BioGears/LungTissue"
                 surfaceData.metallic = _Metallic;
                 surfaceData.smoothness = smoothness;
                 surfaceData.normalTS = normalTS;
-                surfaceData.emission = _EmissionColor.rgb;
+                // Teaching highlight: emission, so it shows even over near-black
+                // pigment. Asthma marks the inflamed airways. COPD marks scarring and
+                // emphysema strongly and pigment only faintly: at high pack-years the
+                // pigment covers nearly the whole surface, and weighting it fully turned
+                // the entire lung one flat violet, which shows nothing about WHERE the
+                // damage is. A slow pulse separates the glow from the tissue's colour.
+                half copdRegion = saturate(emph * 1.6h + scar * 1.4h + pigment * 0.30h);
+                half pulse = 0.65h + 0.35h * sin(_Time.y * 3.0h);
+                half3 highlight = _AsthmaHighlightColor.rgb * saturate(asthma * 1.6h)
+                                + _CopdHighlightColor.rgb * saturate(copdRegion * 1.4h)
+                                + _InfectionHighlightColor.rgb * saturate(pneumonia * 1.4h + ards * 1.1h);
+                surfaceData.emission = _EmissionColor.rgb + highlight * (_HighlightAmount * pulse);
                 surfaceData.occlusion = occlusion;
 
                 half4 color = UniversalFragmentPBR(inputData, surfaceData);
@@ -351,7 +463,8 @@ Shader "BioGears/LungTissue"
 
                 color.rgb += shadowedLight * _TranslucencyColor.rgb * albedo.rgb
                            * back * _TranslucencyStrength * (0.35h + 0.65h * thinness) * occlusion
-                           * saturate(1.0h - pigment * 0.85h);   // carbon blocks transmission
+                           * saturate(1.0h - pigment * 0.85h)    // carbon blocks transmission
+                           * saturate(1.0h - pneumonia * 0.7h);  // so does a solid, airless lobe
 
                 // Wrapped diffuse: lifts the terminator so shadows fade warm instead of
                 // stopping at a hard line, the way light does under skin and viscera.

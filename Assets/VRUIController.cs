@@ -11,10 +11,22 @@ public class VRUIController : MonoBehaviour
 
     // Sliders from UI
     public Slider asthmaSlider;
+    [Tooltip("Read-out for the asthma slider. Without this the panel kept showing the label's authored text while the severity was actually changing.")]
+    public TextMeshProUGUI asthmaText;
     public Slider exerciseSlider;
+    [Tooltip("Read-out for the exercise slider. Without it the label kept its authored '0%' while the value changed.")]
+    public TextMeshProUGUI exerciseText;
     public Slider smokingYearsSlider;
     public TextMeshProUGUI smokingYearsText;
     public float smokingYearsSliderMax = 40f;
+
+    [Header("Pneumonia and ARDS")]
+    [Tooltip("Lobar pneumonia severity 0-1. On the real engine this switches to a precomputed mild/severe patient, which replaces the smoking (COPD) baseline while set.")]
+    public Slider pneumoniaSlider;
+    public TextMeshProUGUI pneumoniaText;
+    [Tooltip("ARDS severity 0-1, applied live.")]
+    public Slider ardsSlider;
+    public TextMeshProUGUI ardsText;
 
     [Header("Smoking exposure")]
     [Tooltip("Cigarettes per day. Years alone is not enough - 40/day for 10 years is four times the exposure of 10/day for 10 years.")]
@@ -50,6 +62,21 @@ public class VRUIController : MonoBehaviour
     public float spo2SliderMin = 70f;
     public float spo2SliderMax = 100f;
 
+    [Header("Disease-region highlight")]
+    [Tooltip("Toggles the pulsing glow over affected regions on the lung.")]
+    public Button highlightButton;
+    public TextMeshProUGUI highlightButtonText;
+    public Color highlightOffColor = new Color(0.06f, 0.10f, 0.13f, 1f);
+    public Color highlightOnColor = new Color(0.25f, 0.95f, 1.00f, 1f);
+    public Color highlightOffLabel = new Color(0.25f, 0.95f, 1.00f, 1f);
+    public Color highlightOnLabel = new Color(0.02f, 0.03f, 0.04f, 1f);
+
+    [Header("Airflow")]
+    [Tooltip("Toggles the airflow particles. Shares the on/off colours above.")]
+    public Button airflowButton;
+    public TextMeshProUGUI airflowButtonText;
+    public AirflowVisualizer airflow;
+
     void Start()
     {
         if (bio == null || asthmaSlider == null || exerciseSlider == null)
@@ -58,6 +85,10 @@ public class VRUIController : MonoBehaviour
             enabled = false;
             return;
         }
+
+        // Before any listener runs: several of them push values to the lung visual.
+        if (lungVisual == null)
+            lungVisual = FindFirstObjectByType<LungMeshDeformer>();
 
         // Attach listeners (when slider moves → these functions run).
         // The initial push matters: the scene had asthma/COPD/exercise severities
@@ -75,9 +106,6 @@ public class VRUIController : MonoBehaviour
         exerciseSlider.value = 0f;
         exerciseSlider.onValueChanged.AddListener(OnExerciseChanged);
         OnExerciseChanged(exerciseSlider.value);
-
-        if (lungVisual == null)
-            lungVisual = FindFirstObjectByType<LungMeshDeformer>();
 
         if (smokingYearsSlider != null)
         {
@@ -123,19 +151,122 @@ public class VRUIController : MonoBehaviour
             spo2Slider.onValueChanged.AddListener(OnSpO2Changed);
             OnSpO2Changed(spo2Slider.value);
         }
+
+        if (pneumoniaSlider != null)
+        {
+            pneumoniaSlider.minValue = 0f;
+            pneumoniaSlider.maxValue = 1f;
+            pneumoniaSlider.value = 0f;
+            pneumoniaSlider.onValueChanged.AddListener(OnPneumoniaChanged);
+            OnPneumoniaChanged(pneumoniaSlider.value);
+        }
+
+        if (ardsSlider != null)
+        {
+            ardsSlider.minValue = 0f;
+            ardsSlider.maxValue = 1f;
+            ardsSlider.value = 0f;
+            ardsSlider.onValueChanged.AddListener(OnArdsChanged);
+            OnArdsChanged(ardsSlider.value);
+        }
+
+        if (highlightButton != null)
+        {
+            highlightButton.onClick.AddListener(ToggleHighlight);
+            RefreshHighlightButton();
+        }
+
+        if (airflow == null)
+            airflow = FindFirstObjectByType<AirflowVisualizer>();
+        if (airflowButton != null)
+        {
+            airflowButton.onClick.AddListener(ToggleAirflow);
+            RefreshToggle(airflowButton, airflowButtonText, "Show airflow", airflow != null && airflow.showAirflow);
+        }
     }
+
+    void ToggleAirflow()
+    {
+        if (airflow == null)
+            return;
+
+        airflow.SetShowAirflow(!airflow.showAirflow);
+        RefreshToggle(airflowButton, airflowButtonText, "Show airflow", airflow.showAirflow);
+    }
+
+    void RefreshToggle(Button button, TextMeshProUGUI label, string name, bool on)
+    {
+        if (button != null && button.targetGraphic != null)
+            button.targetGraphic.color = on ? highlightOnColor : highlightOffColor;
+
+        if (label != null)
+        {
+            label.text = $"{name}: {(on ? "ON" : "OFF")}";
+            label.color = on ? highlightOnLabel : highlightOffLabel;
+        }
+    }
+
+    void ToggleHighlight()
+    {
+        if (lungVisual == null)
+            return;
+
+        lungVisual.SetHighlightAffectedRegions(!lungVisual.highlightAffectedRegions);
+        RefreshHighlightButton();
+    }
+
+    void RefreshHighlightButton() =>
+        RefreshToggle(highlightButton, highlightButtonText, "Highlight regions",
+                      lungVisual != null && lungVisual.highlightAffectedRegions);
 
     // Called when Asthma slider changes
     void OnAsthmaChanged(float value)
     {
         bio.ApplyCondition("asthma", value);
+
+        // Physiology above, appearance here: inflamed, mucus-glossy airways.
+        if (lungVisual != null)
+            lungVisual.SetAsthmaSeverity(value);
+
+        if (asthmaText != null)
+            asthmaText.text = $"Asthma severity: {value * 100f:F0}%";
+
         Debug.Log("Asthma: " + value);
+    }
+
+    void OnPneumoniaChanged(float value)
+    {
+        // Physiology only. The lung's appearance follows the patient BioGears ends up
+        // simulating (which lungs it affects), not this slider - see LungMeshDeformer.
+        bio.ApplyCondition("pneumonia", value);
+
+        // The real engine only has two pneumonia patients (mild / severe), so name the
+        // one in use rather than imply every percent is distinct.
+        if (pneumoniaText != null)
+        {
+            string level = value < 0.15f ? "none" : value < 0.55f ? "mild" : "severe";
+            pneumoniaText.text = $"Pneumonia: {value * 100f:F0}% ({level})";
+        }
+    }
+
+    void OnArdsChanged(float value)
+    {
+        bio.ApplyCondition("ards", value);
+        if (lungVisual != null)
+            lungVisual.SetArdsSeverity(value);
+
+        if (ardsText != null)
+            ardsText.text = $"ARDS severity: {value * 100f:F0}%";
     }
 
     // Called when Exercise slider changes
     void OnExerciseChanged(float value)
     {
         bio.ApplyCondition("exercise", value);
+
+        if (exerciseText != null)
+            exerciseText.text = $"Exercise intensity: {value * 100f:F0}%";
+
         Debug.Log("Exercise: " + value);
     }
 
