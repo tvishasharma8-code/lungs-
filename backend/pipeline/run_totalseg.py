@@ -20,18 +20,17 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import nibabel as nib
 import numpy as np
 import trimesh
-from pydicom import dcmread
-from skimage import measure
-from skimage.filters import gaussian
 
 import dicom2nifti
+
+from pipeline import lung_mesh
+from pipeline.dicom_series import load_series
 
 # Structures we segment and fuse into the final lung + airway mesh.
 ROI_SUBSET = [
@@ -56,6 +55,13 @@ class PipelineResult:
     face_count: int
     included_structures: list[str]
     elapsed_seconds: float
+    # VR package (mesh.bin + meta.json), when requested
+    vr_dir: Optional[str] = None
+    vr_triangles: int = 0
+
+# Triangle budget for the VR mesh: enough for the lobes' shape, light enough for a
+# Quest to breathe and shade every frame.
+VR_TARGET_TRIANGLES = 200_000
 
 
 class PipelineError(RuntimeError):
@@ -66,6 +72,20 @@ def _noop_progress(step_id: str, detail: str, percent: Optional[int] = None) -> 
     pass
 
 
+def _totalsegmentator_exe() -> str:
+    """The TotalSegmentator command. Looks next to the running Python first, so the
+    backend works from a virtualenv that was never 'activated' (Scripts/ or bin/ not
+    on PATH), then falls back to PATH."""
+    import sys
+
+    here = os.path.dirname(sys.executable)
+    for name in ("TotalSegmentator.exe", "TotalSegmentator"):
+        candidate = os.path.join(here, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return shutil.which("TotalSegmentator") or "TotalSegmentator"
+
+
 def run_pipeline(
     dicom_dir: str,
     workspace_dir: str,
@@ -73,6 +93,8 @@ def run_pipeline(
     log: Callable[[str], None] = print,
     progress: ProgressCallback = _noop_progress,
     fast: bool = False,
+    vr_dir: Optional[str] = None,
+    vr_target_triangles: int = VR_TARGET_TRIANGLES,
 ) -> PipelineResult:
     """
     Run the full DICOM -> NIfTI -> TotalSegmentator -> STL pipeline.
@@ -91,6 +113,13 @@ def run_pipeline(
     fast:           if True, passes --fast to TotalSegmentator. Kept
                     False by default to match the original script,
                     which explicitly avoids --fast for accuracy.
+    vr_dir:         if set, also writes the VR package mesh here:
+                    mesh.bin (decimated, one sub-mesh per lobe + trachea)
+                    and meta.json - see pipeline/lung_mesh.py.
+
+    Both the STL and the VR mesh are in DICOM patient coordinates (LPS,
+    mm) - the same frame as tumor detections - so findings can be placed
+    on the model.
     """
     start = time.time()
     os.makedirs(workspace_dir, exist_ok=True)
@@ -109,33 +138,27 @@ def run_pipeline(
         log("STEP 1: Scanning DICOM series")
         progress("dicom_read", "Reading DICOM series", 0)
 
-        series: dict[str, list[str]] = defaultdict(list)
-        for f in os.listdir(dicom_dir):
-            p = os.path.join(dicom_dir, f)
-            if not os.path.isfile(p):
-                continue
-            try:
-                dcm = dcmread(p, stop_before_pixels=True)
-                series[dcm.SeriesInstanceUID].append(p)
-            except Exception:
-                pass
-
-        if not series:
+        # Shared loader: the same series and slice order tumor detection uses.
+        try:
+            dicom_series = load_series(dicom_dir)
+        except FileNotFoundError as exc:
             raise PipelineError(
                 "No valid DICOM series found in the uploaded folder."
-            )
+            ) from exc
 
-        series_uid, files = max(series.items(), key=lambda x: len(x[1]))
-        log(f"Selected series: {series_uid}")
+        files = dicom_series.paths
+        log(f"Selected series: {dicom_series.series_uid}")
         log(f"Slice count: {len(files)}")
         progress("dicom_read", f"Selected series with {len(files)} slices", 100)
 
         # ------------------------------------------------------------
         # STEP 2: Copy series to a clean temp folder
         # ------------------------------------------------------------
+        # Numbered names: files from different sub-folders can share a
+        # name, and copying by base name would overwrite slices.
         tmp_dicom_dir = tempfile.mkdtemp(prefix="dicom_series_")
-        for f in files:
-            shutil.copy(f, tmp_dicom_dir)
+        for i, f in enumerate(files):
+            shutil.copy(f, os.path.join(tmp_dicom_dir, f"{i:05d}.dcm"))
         log(f"Temporary DICOM dir: {tmp_dicom_dir}")
 
         # ------------------------------------------------------------
@@ -172,7 +195,7 @@ def run_pipeline(
         progress("segmentation", "Starting TotalSegmentator", 5)
 
         cmd = [
-            "TotalSegmentator",
+            _totalsegmentator_exe(),
             "-i", ct_nifti,
             "-o", seg_dir,
             "--roi_subset",
@@ -222,62 +245,74 @@ def run_pipeline(
         log("STEP 5: Merging lungs and trachea")
         progress("merge", "Merging lung lobes and trachea masks", 0)
 
-        masks = []
+        # One label volume (1..K = structure, 0 = outside) rather than a
+        # plain OR of the masks, so the VR mesh can tell lobes apart.
+        labels = None
         affine = None
         found_structures = []
         for f in MASK_FILES:
             p = os.path.join(seg_dir, f)
             if os.path.exists(p):
                 img = nib.load(p)
-                masks.append(img.get_fdata() > 0)
-                affine = img.affine
+                mask = np.asanyarray(img.dataobj) > 0
+                if labels is None:
+                    labels = np.zeros(mask.shape, dtype=np.int16)
+                    affine = img.affine
                 found_structures.append(f.replace(".nii.gz", ""))
+                labels[mask & (labels == 0)] = len(found_structures)
 
-        if not masks:
+        if labels is None:
             raise PipelineError(
                 "No lung / trachea masks were produced by TotalSegmentator."
             )
 
-        merged = np.logical_or.reduce(masks)
+        merged = labels > 0
         log("Lungs and trachea merged")
         progress("merge", f"Merged {len(found_structures)} structures", 100)
 
         # ------------------------------------------------------------
-        # STEP 5.5: Smooth volume
+        # STEP 5.5 + 6: Smooth, mesh in patient coordinates -> STL
         # ------------------------------------------------------------
+        # Same smoothing (sigma 1.2) and iso-level as before, but the surface is
+        # now taken through the full NIfTI affine into DICOM patient coordinates
+        # (LPS, mm) instead of an origin-less spacing-only box - see lung_mesh.py.
         log("STEP 5.5: Smoothing volume")
         progress("smooth", "Smoothing volume", 0)
-
-        merged_smooth = gaussian(
-            merged.astype(np.float32),
-            sigma=1.2,
-            preserve_range=True,
-        )
-        log("Volume smoothed")
+        log("STEP 6: Creating STL mesh (patient coordinates, LPS mm)")
         progress("smooth", "Volume smoothed", 100)
-
-        # ------------------------------------------------------------
-        # STEP 6: Mesh -> STL
-        # ------------------------------------------------------------
-        log("STEP 6: Creating STL mesh")
         progress("mesh", "Running marching cubes", 10)
 
-        verts, faces, _, _ = measure.marching_cubes(
-            merged_smooth,
-            level=0.5,
-            spacing=np.abs(np.diag(affine))[:3],
-        )
+        surface = lung_mesh.extract_surface(merged, affine, sigma=1.2)
 
-        mesh = trimesh.Trimesh(verts, faces, process=False)
+        mesh = trimesh.Trimesh(surface.verts_lps, surface.faces, process=False)
         mesh.remove_unreferenced_vertices()
         mesh.merge_vertices()
         mesh.update_faces(mesh.nondegenerate_faces())
         mesh.fix_normals()
 
-        progress("mesh", "Exporting STL", 90)
+        progress("mesh", "Exporting STL", 70)
         mesh.export(out_stl_path)
-
         log(f"STL saved: {out_stl_path}")
+
+        vr_triangles = 0
+        if vr_dir:
+            progress("mesh", "Building VR mesh (decimate + label lobes)", 80)
+            os.makedirs(vr_dir, exist_ok=True)
+            clean = lung_mesh.Surface(np.asarray(mesh.vertices, dtype=np.float64),
+                                      np.asarray(mesh.faces, dtype=np.int64))
+            vr_surface = lung_mesh.decimate(clean, vr_target_triangles)
+            face_labels = lung_mesh.label_faces(vr_surface, labels, affine)
+            structures = lung_mesh.write_mesh_bin(
+                os.path.join(vr_dir, "mesh.bin"), vr_surface, face_labels, found_structures)
+            voxel_spacing = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
+            lung_mesh.write_meta(
+                os.path.join(vr_dir, "meta.json"), vr_surface, structures,
+                series_uid=dicom_series.series_uid, slice_count=len(files),
+                voxel_spacing_mm=list(voxel_spacing), mesh_file="mesh.bin")
+            vr_triangles = int(len(vr_surface.faces))
+            per_structure = ", ".join("%s=%d" % (s["name"], s["triangles"]) for s in structures)
+            log(f"VR mesh saved: {vr_dir} ({vr_triangles} triangles: {per_structure})")
+
         progress("mesh", "STL generated", 100)
 
         elapsed = time.time() - start
@@ -287,6 +322,8 @@ def run_pipeline(
             face_count=int(len(mesh.faces)),
             included_structures=found_structures,
             elapsed_seconds=elapsed,
+            vr_dir=vr_dir,
+            vr_triangles=vr_triangles,
         )
     finally:
         if tmp_dicom_dir and os.path.isdir(tmp_dicom_dir):

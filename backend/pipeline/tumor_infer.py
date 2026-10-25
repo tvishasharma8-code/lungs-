@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import os
 import threading
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -51,6 +50,8 @@ import torch
 import torchvision
 from PIL import Image
 from pydicom import dcmread
+
+from pipeline.dicom_series import load_series
 
 # Filename matches what the team currently hands off. If a future
 # retrain produces a differently-named file, either rename it to this
@@ -126,29 +127,19 @@ def preprocess_slice(pixel_array: np.ndarray) -> torch.Tensor:
 
 
 def list_series_files(dicom_dir: str) -> list[str]:
-    """Same series-selection logic as the reconstruction pipeline: pick
-    the largest series in the folder, so both pipelines analyze the
-    same scan even if stray files are mixed into the upload.
+    """The CT series' files in body order (index 0 = most superior slice),
+    from the shared loader that reconstruction uses too.
 
     Public (no leading underscore) because main.py's slice-image
     endpoint calls this too, and it's critical that it uses the exact
     same ordering run_inference_on_series used - a `slice_index` only
     means anything if both sides agree on which file that index maps
-    to."""
-    series: dict[str, list[str]] = defaultdict(list)
-    for f in os.listdir(dicom_dir):
-        p = os.path.join(dicom_dir, f)
-        if not os.path.isfile(p):
-            continue
-        try:
-            dcm = dcmread(p, stop_before_pixels=True)
-            series[dcm.SeriesInstanceUID].append(p)
-        except Exception:
-            pass
-    if not series:
+    to. (It used to sort by file name, which is not body order on many
+    exports and disagreed with the ML team's Unity tumor server.)"""
+    try:
+        return load_series(dicom_dir).paths
+    except FileNotFoundError:
         return []
-    _, files = max(series.items(), key=lambda x: len(x[1]))
-    return sorted(files)
 
 
 def run_inference_on_series(
