@@ -152,7 +152,30 @@ def label_faces(surface: Surface, labels: np.ndarray, affine: np.ndarray) -> np.
     # A face whose chosen vertex still has no label borrows any labelled vertex's.
     unl = face_label == 0
     face_label[unl] = np.maximum(np.maximum(l0[unl], l1[unl]), l2[unl])
+
+    # Faces far from every AI mask (e.g. airway the CT refinement added beyond where
+    # TotalSegmentator's trachea stops) take the label of the nearest labelled face.
+    unl = np.nonzero(face_label == 0)[0]
+    if len(unl) and len(unl) < len(face_label):
+        from scipy.spatial import cKDTree
+
+        centres = surface.verts_lps[surface.faces].mean(axis=1)
+        known = np.nonzero(face_label > 0)[0]
+        _, nearest = cKDTree(centres[known]).query(centres[unl])
+        face_label[unl] = face_label[known[nearest]]
     return face_label.astype(np.int16)
+
+
+def keep_main_bodies(mesh, min_fraction: float = 0.005):
+    """Drops small disconnected fragments (specks at the mask border) from a trimesh."""
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh
+    total = sum(len(p.faces) for p in parts)
+    kept = [p for p in parts if len(p.faces) >= min_fraction * total]
+    import trimesh
+
+    return trimesh.util.concatenate(kept) if kept else mesh
 
 
 def write_mesh_bin(path: str, surface: Surface, face_labels: np.ndarray, names: list[str]) -> list[dict]:
