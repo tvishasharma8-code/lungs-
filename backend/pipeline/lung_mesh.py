@@ -57,9 +57,21 @@ def signed_volume(verts: np.ndarray, faces: np.ndarray) -> float:
     return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
 
 
-def extract_surface(mask: np.ndarray, affine: np.ndarray, sigma: float = 1.2) -> Surface:
-    """Smoothed iso-surface of a binary mask, in LPS mm, normals pointing outward."""
-    smooth = gaussian(mask.astype(np.float32), sigma=sigma, preserve_range=True)
+def voxel_spacing_mm(affine: np.ndarray) -> np.ndarray:
+    return np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
+
+
+def extract_surface(mask: np.ndarray, affine: np.ndarray, sigma_mm: float = 2.0) -> Surface:
+    """
+    Smoothed iso-surface of a binary mask, in LPS mm, normals pointing outward.
+
+    The blur is specified in millimetres and converted per axis: a fixed blur in
+    voxels (the original sigma=1.2) is far too little on a coarse or upsampled mask -
+    e.g. TotalSegmentator --fast works at 3 mm, so its masks are 3-4 voxel blocks and
+    the surface came out terraced. See also smooth_mesh().
+    """
+    sigma_vox = sigma_mm / np.maximum(voxel_spacing_mm(affine), 1e-6)
+    smooth = gaussian(mask.astype(np.float32), sigma=tuple(float(s) for s in sigma_vox), preserve_range=True)
     verts_ijk, faces, _, _ = measure.marching_cubes(smooth, level=0.5)
     verts = index_to_lps(verts_ijk.astype(np.float64), affine)
     faces = faces.astype(np.int64)
@@ -68,6 +80,20 @@ def extract_surface(mask: np.ndarray, affine: np.ndarray, sigma: float = 1.2) ->
     if signed_volume(verts, faces) < 0:
         faces = faces[:, ::-1].copy()
     return Surface(verts, faces)
+
+
+def smooth_mesh(mesh, iterations: int = 30):
+    """
+    Taubin smoothing in place on a trimesh.Trimesh (connected, merged vertices).
+    Removes the remaining voxel staircase without the shrinkage plain Laplacian
+    smoothing causes - the lung keeps its size and stays in place, which the
+    coordinate check verifies. Same family of filter as the Unity project's
+    LungMeshSmoother.
+    """
+    import trimesh
+
+    trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=iterations)
+    return mesh
 
 
 def decimate(surface: Surface, target_triangles: int) -> Surface:

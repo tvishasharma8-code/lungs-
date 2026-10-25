@@ -59,9 +59,11 @@ class PipelineResult:
     vr_dir: Optional[str] = None
     vr_triangles: int = 0
 
-# Triangle budget for the VR mesh: enough for the lobes' shape, light enough for a
-# Quest to breathe and shade every frame.
-VR_TARGET_TRIANGLES = 200_000
+# Triangle budget for the VR mesh. Default: the detail of the VR app's own lung model
+# (LungModel.fbx, made in 3D Slicer + Blender: ~730k vertices / ~1.46M triangles),
+# which already runs on the Quest - so patient lungs look as good as that model, not
+# coarser. LUNGVISION_VR_TRIANGLES overrides it (e.g. 400000 for a lighter mesh).
+VR_TARGET_TRIANGLES = int(os.environ.get("LUNGVISION_VR_TRIANGLES", "1460000"))
 
 
 class PipelineError(RuntimeError):
@@ -282,12 +284,15 @@ def run_pipeline(
         progress("smooth", "Volume smoothed", 100)
         progress("mesh", "Running marching cubes", 10)
 
-        surface = lung_mesh.extract_surface(merged, affine, sigma=1.2)
+        # --fast segments at 3 mm, so its masks need a stronger blur than full resolution.
+        surface = lung_mesh.extract_surface(merged, affine, sigma_mm=3.0 if fast else 2.0)
 
         mesh = trimesh.Trimesh(surface.verts_lps, surface.faces, process=False)
         mesh.remove_unreferenced_vertices()
         mesh.merge_vertices()
         mesh.update_faces(mesh.nondegenerate_faces())
+        progress("mesh", "Smoothing surface", 40)
+        lung_mesh.smooth_mesh(mesh, iterations=30)
         mesh.fix_normals()
 
         progress("mesh", "Exporting STL", 70)
@@ -304,7 +309,7 @@ def run_pipeline(
             face_labels = lung_mesh.label_faces(vr_surface, labels, affine)
             structures = lung_mesh.write_mesh_bin(
                 os.path.join(vr_dir, "mesh.bin"), vr_surface, face_labels, found_structures)
-            voxel_spacing = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
+            voxel_spacing = lung_mesh.voxel_spacing_mm(affine)
             lung_mesh.write_meta(
                 os.path.join(vr_dir, "meta.json"), vr_surface, structures,
                 series_uid=dicom_series.series_uid, slice_count=len(files),
