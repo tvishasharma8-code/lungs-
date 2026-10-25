@@ -87,5 +87,10 @@ patient_package/
       breathing/UVs/tangents/airway frame, one material copy per lobe keeps disease state),
       `AirflowVisualizer.Rebuild`. Added by BioGears > Fix VR Scene Layout. Awaiting first
       in-Unity test. Not yet: patient picker / "default lung" button on the console.
+- [x] Patient lung quality parity with the app's own 3D Slicer model — mm-based blur + Taubin
+      smoothing (roughness 11.0° → 1.4°, volume unchanged), VR budget ~1.46M triangles (matches
+      `LungModel.fbx`; full-resolution surfaces go unreduced, ~600k). `backend/tools/import_model.py`
+      brings a hand-made Slicer model to VR at its own quality (LPS/RAS auto-detected against
+      the CT, misaligned models rejected).
 - [ ] Still needed: `tumor_model_v5.pth` (for I1.2 detection + tumor-in-mesh check) and 2 more test
       patients (plan asks for ≥3, incl. one with uneven slice spacing, e.g. A0265).
