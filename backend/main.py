@@ -10,9 +10,21 @@ Endpoints:
     GET    /api/slice-image/{job_id}/{n}      render CT slice n as a PNG (for overlaying findings)
     POST   /api/reset                         delete all data for a session (no history is kept)
 
+  VR app (Patient Packages - see services/vr_service.py):
+    POST   /api/vr/send/{job_id}              keep this job's 3D model + findings for VR, make it active
+    GET    /api/vr/patients                   list kept patients
+    GET    /api/vr/active                     {"id": ...} the patient VR should show
+    POST   /api/vr/active/{patient_id}        choose the patient VR should show
+    GET    /api/vr/patients/{id}/{file}       meta.json | mesh.bin | findings.json
+    DELETE /api/vr/patients/{id}              remove a kept patient
+
 No login, no database. Uploaded files and generated outputs live only
-under backend/temp/ and are removed by /api/reset (also called
-automatically by the frontend's "New Analysis" button).
+in the OS temp folder and are removed by /api/reset (also called
+automatically by the frontend's "New Analysis" button). The one
+exception is "Send to VR", which the user chooses explicitly.
+
+For a standalone Quest to reach this server, run it on the network:
+    uvicorn main:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -37,8 +49,9 @@ from models.schemas import (
     StartAnalysisResponse,
     UploadResponse,
 )
+from pipeline.dicom_series import safe_relative_path
 from pipeline.tumor_infer import list_series_files, normalize_to_grayscale_uint8
-from services import analysis_service
+from services import analysis_service, vr_service
 from services.progress_service import job_store
 
 app = FastAPI(title="LungVision API", version="0.1.0")
@@ -94,10 +107,14 @@ async def upload_dicom(request: Request) -> UploadResponse:
 
     saved = 0
     for upload in uploads:
-        filename = os.path.basename(getattr(upload, "filename", "") or "")
-        if not filename:
+        # Keep the path inside the chosen folder (the frontend sends
+        # webkitRelativePath). Saving by base name alone let same-named files
+        # from different series sub-folders overwrite each other.
+        rel = safe_relative_path(getattr(upload, "filename", "") or "")
+        if not rel:
             continue
-        dest_path = os.path.join(dest_dir, filename)
+        dest_path = os.path.join(dest_dir, rel)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "wb") as out:
             shutil.copyfileobj(upload.file, out)
         saved += 1
@@ -196,3 +213,62 @@ def get_slice_image(job_id: str, slice_index: int):
 def reset(session_id: str, job_id: str | None = None) -> dict:
     analysis_service.cleanup_session(session_id, job_id)
     return {"status": "cleared"}
+
+
+# ---------------------------------------------------------------- VR app
+
+@app.post("/api/vr/send/{job_id}")
+def vr_send(job_id: str, label: str | None = None) -> dict:
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.state != JobState.COMPLETED or not job.results.reconstruction:
+        raise HTTPException(status_code=409, detail="Send to VR needs a completed 3D reconstruction.")
+    vr_dir = os.path.join(analysis_service.OUTPUT_ROOT, f"{job_id}_vr")
+    # Findings join the package once detection reports positions in mm (plan I1.2/I1.3).
+    try:
+        return vr_service.create_package(job_id, vr_dir, findings=None, label=label)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/vr/patients")
+def vr_patients() -> list[dict]:
+    return vr_service.list_packages()
+
+
+@app.get("/api/vr/active")
+def vr_active() -> dict:
+    return {"id": vr_service.get_active()}
+
+
+@app.post("/api/vr/active/{patient_id}")
+def vr_set_active(patient_id: str) -> dict:
+    try:
+        vr_service.set_active(patient_id)
+    except vr_service.PackageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Patient not found.") from exc
+    return {"id": patient_id}
+
+
+@app.get("/api/vr/patients/{patient_id}/{file_name}")
+def vr_package_file(patient_id: str, file_name: str):
+    try:
+        path = vr_service.package_file(patient_id, file_name)
+    except vr_service.PackageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Not found.") from exc
+    media = "application/octet-stream" if file_name.endswith(".bin") else "application/json"
+    return FileResponse(path, media_type=media)
+
+
+@app.delete("/api/vr/patients/{patient_id}")
+def vr_delete(patient_id: str) -> dict:
+    try:
+        vr_service.delete_package(patient_id)
+    except vr_service.PackageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "deleted"}

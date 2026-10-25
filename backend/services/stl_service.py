@@ -51,12 +51,15 @@ def run_reconstruction(job: Job, dicom_dir: str, workspace_dir: str, out_stl_pat
         job.set_step(PIPELINE_KEY, step_id, status, detail=detail, percent=percent)
 
     try:
+        # The VR package mesh sits next to the STL: <job_id>_vr/mesh.bin + meta.json.
+        vr_dir = os.path.splitext(out_stl_path)[0] + "_vr"
         result = run_pipeline(
             dicom_dir=dicom_dir,
             workspace_dir=workspace_dir,
             out_stl_path=out_stl_path,
             log=log,
             progress=on_progress,
+            vr_dir=vr_dir,
         )
     except PipelineError:
         raise

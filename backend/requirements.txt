@@ -11,6 +11,8 @@ scikit-image>=0.24
 dicom2nifti>=2.4.10
 pydicom>=2.4
 TotalSegmentator>=2.4.0
+scipy>=1.11
+fast-simplification>=0.1.7   # decimates the VR mesh (pipeline/lung_mesh.py)
 
 # --- AI abnormality detection (Faster R-CNN tumor/nodule model) ---
 torch>=2.1
