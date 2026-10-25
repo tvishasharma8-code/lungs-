@@ -69,6 +69,23 @@ public class LungMeshDeformer : MonoBehaviour
     [Tooltip("Tidal volume (mL) treated as normal. Inflation depth scales with the tidal volume BioGears reports, relative to this - so asthma/COPD/exercise visibly change how far the lung inflates. Set to 0 for a fixed amplitude.")]
     public float referenceTidalVolume = 500f;
 
+    [Header("Disease Regions")]
+    [Tooltip("0-1. Drives airway-centred inflammation in the shader. Set from the asthma slider via SetAsthmaSeverity.")]
+    [Range(0f, 1f)] public float asthmaSeverity = 0f;
+
+    // Pneumonia is not set from the UI: it follows the patient BioGears is simulating
+    // (BioGearsNativeRespiratory.ActivePneumonia), lung by lung. See SyncPneumonia.
+    BioGearsNativeRespiratory.PneumoniaExtent shownPneumonia;
+
+    [Tooltip("0-1. Diffuse, bilateral wet lungs in the shader. Set via SetArdsSeverity.")]
+    [Range(0f, 1f)] public float ardsSeverity = 0f;
+
+    [Tooltip("Pulsing teaching glow over affected regions: amber = asthma airways, violet = COPD / smoke damage, green = pneumonia / ARDS.")]
+    public bool highlightAffectedRegions = false;
+
+    [Tooltip("How fast the highlight fades in and out (per second).")]
+    public float highlightFadeSpeed = 3f;
+
     [Header("Smoking Color Visualization")]
     [Tooltip("If enabled, applies smoking visuals to renderers on this object and all children")]
     public bool applyToChildRenderers = true;
@@ -167,6 +184,19 @@ public class LungMeshDeformer : MonoBehaviour
     static readonly int BreathExpansionId = Shader.PropertyToID("_BreathExpansion");
     static readonly int BreathCentreId = Shader.PropertyToID("_BreathCentre");
     static readonly int BreathAxisScaleId = Shader.PropertyToID("_BreathAxisScale");
+    static readonly int AsthmaSeverityId = Shader.PropertyToID("_AsthmaSeverity");
+    static readonly int LungUpOSId = Shader.PropertyToID("_LungUpOS");
+    static readonly int LungRadialExtentId = Shader.PropertyToID("_LungRadialExtent");
+    static readonly int HighlightAmountId = Shader.PropertyToID("_HighlightAmount");
+    static readonly int PneumoniaSeverityId = Shader.PropertyToID("_PneumoniaSeverity");
+    static readonly int PneumoniaLeftId = Shader.PropertyToID("_PneumoniaLeft");
+    static readonly int PneumoniaRightId = Shader.PropertyToID("_PneumoniaRight");
+    static readonly int ArdsSeverityId = Shader.PropertyToID("_ArdsSeverity");
+    static readonly int LungLateralOSId = Shader.PropertyToID("_LungLateralOS");
+    static readonly int LungHeightRangeId = Shader.PropertyToID("_LungHeightRange");
+
+    // Current (faded) highlight strength actually sent to the shader.
+    float highlightAmount;
 
     void Start()
     {
@@ -226,53 +256,7 @@ public class LungMeshDeformer : MonoBehaviour
         }
         else
         {
-            mesh = Instantiate(mf.sharedMesh);
-            mf.mesh = mesh;
-            mesh.MarkDynamic();
-
-            originalVertices = mesh.vertices;
-            displacedVertices = new Vector3[originalVertices.Length];
-            directions = new Vector3[originalVertices.Length];
-
-            Vector3 center = mesh.bounds.center;
-
-            // Original breathing deformation, restored verbatim: every vertex is pushed
-            // straight out from the mesh centre, scaled per-axis by expansionScale in
-            // Update(). Deliberately NOT anatomically weighted - the weighted variants
-            // tried previously looked worse in the headset, so this is the version that
-            // stays.
-            for (int i = 0; i < originalVertices.Length; i++)
-                directions[i] = (originalVertices[i] - center).normalized;
-
-            // The axis below is used ONLY to unwrap UVs for the smoking stain (see
-            // EnsureStainUVs); it no longer influences the breathing motion at all.
-            Vector3 localUp = transform.InverseTransformDirection(Vector3.up);
-            if (localUp.sqrMagnitude < 1e-8f)
-                localUp = Vector3.up;
-            localUp.Normalize();
-            if (invertBreathingAxis)
-                localUp = -localUp;
-
-            // Extent of the mesh along that axis, for the base->apex gradient.
-            float minH = float.MaxValue;
-            float maxH = float.MinValue;
-            for (int i = 0; i < originalVertices.Length; i++)
-            {
-                float d = Vector3.Dot(originalVertices[i], localUp);
-                if (d < minH) minH = d;
-                if (d > maxH) maxH = d;
-            }
-
-            // Largest possible outward displacement across a full breath, used as a
-            // fixed bounds so Update() can skip RecalculateBounds entirely.
-            float maxAxisScale = Mathf.Max(Mathf.Abs(expansionScale.x), Mathf.Max(Mathf.Abs(expansionScale.y), Mathf.Abs(expansionScale.z)));
-            deformedBounds = mesh.bounds;
-            deformedBounds.Expand(2f * maxExpansion * Mathf.Max(1f, maxAxisScale));
-            mesh.bounds = deformedBounds;
-
-            EnsureStainUVs(localUp, minH, maxH, center);
-
-            Debug.Log($"LungMeshDeformer: Deformation initialized with {originalVertices.Length} vertices, connected to BioGears");
+            InitializeMesh(mf, Instantiate(mf.sharedMesh));
         }
 
         DetectShaderDamageSupport();
@@ -298,6 +282,115 @@ public class LungMeshDeformer : MonoBehaviour
     }
 
     /// <summary>
+    /// Everything that depends on the mesh itself: rest pose, breathing directions,
+    /// stain UVs, the airway frame for the shader and the fixed deformed bounds. Run
+    /// once from Start, and again by ReplaceMesh when a patient's lung is loaded.
+    /// </summary>
+    void InitializeMesh(MeshFilter mf, Mesh newMesh)
+    {
+        mesh = newMesh;
+        mf.mesh = mesh;
+        mesh.MarkDynamic();
+
+        originalVertices = mesh.vertices;
+        displacedVertices = new Vector3[originalVertices.Length];
+        directions = new Vector3[originalVertices.Length];
+
+        Vector3 center = mesh.bounds.center;
+
+        // Original breathing deformation, restored verbatim: every vertex is pushed
+        // straight out from the mesh centre, scaled per-axis by expansionScale in
+        // Update(). Deliberately NOT anatomically weighted - the weighted variants
+        // tried previously looked worse in the headset, so this is the version that
+        // stays.
+        for (int i = 0; i < originalVertices.Length; i++)
+            directions[i] = (originalVertices[i] - center).normalized;
+
+        // The axis below is used ONLY to unwrap UVs for the smoking stain (see
+        // EnsureStainUVs); it no longer influences the breathing motion at all.
+        Vector3 localUp = transform.InverseTransformDirection(Vector3.up);
+        if (localUp.sqrMagnitude < 1e-8f)
+            localUp = Vector3.up;
+        localUp.Normalize();
+        if (invertBreathingAxis)
+            localUp = -localUp;
+
+        // Extent of the mesh along that axis, for the base->apex gradient.
+        float minH = float.MaxValue;
+        float maxH = float.MinValue;
+        for (int i = 0; i < originalVertices.Length; i++)
+        {
+            float d = Vector3.Dot(originalVertices[i], localUp);
+            if (d < minH) minH = d;
+            if (d > maxH) maxH = d;
+        }
+
+        // Largest possible outward displacement across a full breath, used as a
+        // fixed bounds so Update() can skip RecalculateBounds entirely.
+        float maxAxisScale = Mathf.Max(Mathf.Abs(expansionScale.x), Mathf.Max(Mathf.Abs(expansionScale.y), Mathf.Abs(expansionScale.z)));
+        deformedBounds = mesh.bounds;
+        deformedBounds.Expand(2f * maxExpansion * Mathf.Max(1f, maxAxisScale));
+        mesh.bounds = deformedBounds;
+
+        EnsureStainUVs(localUp, minH, maxH, center);
+        PushAirwayFrame(localUp, center);
+
+        Debug.Log($"LungMeshDeformer: Deformation initialized with {originalVertices.Length} vertices, connected to BioGears");
+    }
+
+    /// <summary>
+    /// Swaps in a different lung - e.g. a patient's CT reconstruction - while the scene
+    /// runs. The mesh must already be in this object's local space, Y up. Each sub-mesh
+    /// (lobe / trachea) gets its own copy of the current lung material, so the disease,
+    /// smoking and highlight state carries over unchanged.
+    /// </summary>
+    public void ReplaceMesh(Mesh newMesh, bool destroyPrevious = true)
+    {
+        MeshFilter mf = GetComponent<MeshFilter>();
+        MeshRenderer mr = GetComponent<MeshRenderer>();
+        if (mf == null || mr == null || newMesh == null)
+        {
+            Debug.LogError("LungMeshDeformer.ReplaceMesh: needs a MeshFilter + MeshRenderer on this object and a mesh.");
+            return;
+        }
+
+        // Copies of the live material (not the asset): keeps everything already set on
+        // it - smoking damage, asthma, pneumonia, ARDS, highlight, the airway frame.
+        Material template = lungMaterials != null && lungMaterials.Length > 0 && lungMaterials[0] != null
+            ? lungMaterials[0]
+            : mr.sharedMaterial;
+        var perSubMesh = new Material[Mathf.Max(1, newMesh.subMeshCount)];
+        for (int i = 0; i < perSubMesh.Length; i++)
+            perSubMesh[i] = new Material(template) { name = template.name + "_" + i };
+
+        // sharedMaterials with our own copies (not assets): this renderer is their only
+        // user, and reading renderer.materials could clone them again.
+        Material[] old = lungMaterials;
+        mr.sharedMaterials = perSubMesh;
+        lungMaterials = perSubMesh;
+        targetRenderers = new Renderer[] { mr };
+        primaryMaterialIndex = 0;
+        if (old != null)
+            foreach (Material m in old)
+                if (m != null && System.Array.IndexOf(perSubMesh, m) < 0)
+                    Destroy(m);
+
+        Mesh previous = mesh;
+        InitializeMesh(mf, newMesh);
+        DetectShaderDamageSupport();
+        SetupGpuBreathing();
+        SetOnMaterials(HighlightAmountId, highlightAmount);
+        // Force the pneumonia extent to be re-sent to the new materials on the next frame.
+        shownPneumonia = new BioGearsNativeRespiratory.PneumoniaExtent { severity = -1f };
+
+        if (destroyPrevious && previous != null && previous != newMesh)
+            Destroy(previous);
+    }
+
+    /// <summary>The mesh currently being deformed (the default lung or a patient's).</summary>
+    public Mesh CurrentMesh => mesh;
+
+    /// <summary>
     /// Dumps what the material actually looks like AFTER Start has finished touching it.
     /// The lung renders correctly in the Game view before Play and differently after, so
     /// something in this component's startup is changing the material - this reports the
@@ -319,28 +412,30 @@ public class LungMeshDeformer : MonoBehaviour
         string metal = mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic").ToString("F3") : "(none)";
         string dmg = mat.HasProperty(Damage01Id) ? mat.GetFloat(Damage01Id).ToString("F3") : "(none)";
 
+        // Single line, no embedded newlines: an earlier version of this used "\n"
+        // escapes that ended up as real line breaks inside the string literals, which
+        // does not compile and blocked Play mode entirely.
         Debug.Log(
-            $"[LungMeshDeformer] RUNTIME MATERIAL STATE
-" +
-            $"  shader        : {mat.shader.name}
-" +
-            $"  _BaseMap      : {baseMap}
-" +
-            $"  _BaseColor    : {tint}
-" +
-            $"  _EmissionColor: {emis}
-" +
-            $"  _Metallic     : {metal}
-" +
-            $"  _Damage01     : {dmg}   (smokingYears {smokingYears:F1}, cigs/day {cigarettesPerDay:F0}, pack-years {PackYears:F1})
-" +
-            $"  gpuDamage     : {gpuDamageActive}   gpuBreathing: {gpuBreathingActive}");
+            "[LungMeshDeformer] RUNTIME MATERIAL STATE | " +
+            "shader=" + mat.shader.name +
+            " | _BaseMap=" + baseMap +
+            " | _BaseColor=" + tint +
+            " | _EmissionColor=" + emis +
+            " | _Metallic=" + metal +
+            " | _Damage01=" + dmg +
+            " | smokingYears=" + smokingYears.ToString("F1") +
+            " cigs/day=" + cigarettesPerDay.ToString("F0") +
+            " packYears=" + PackYears.ToString("F1") +
+            " | gpuDamage=" + gpuDamageActive +
+            " gpuBreathing=" + gpuBreathingActive);
     }
 
     void Update()
     {
         if (bioGearsSystem == null) return;
         if (!bioGearsSystem.IsRunning) return;
+
+        SyncPneumonia();
 
         if (mesh != null && originalVertices != null)
         {
@@ -411,6 +506,145 @@ public class LungMeshDeformer : MonoBehaviour
 
         if (useOverlayMesh)
             UpdateOverlayMesh();
+
+        UpdateHighlight();
+    }
+
+    /// <summary>
+    /// Gives the shader what it needs to find the airways: the lungs' vertical axis and
+    /// how far tissue extends from it. The trachea and hilum sit on that axis, so the
+    /// shader treats "close to the axis" as "airway". Constant for the session.
+    /// </summary>
+    void PushAirwayFrame(Vector3 localUp, Vector3 center)
+    {
+        if (lungMaterials == null) return;
+
+        Vector3 up = localUp.normalized;
+        Vector3 refVec = Mathf.Abs(Vector3.Dot(up, Vector3.right)) < 0.9f ? Vector3.right : Vector3.forward;
+        Vector3 ax = Vector3.Cross(up, refVec).normalized;
+        Vector3 ay = Vector3.Cross(up, ax);
+
+        // Radial extent, height range, and the widest horizontal direction (left-right,
+        // via the 2x2 covariance of the horizontal positions).
+        float maxRadial = 0f, minH = float.MaxValue, maxH = float.MinValue;
+        float sxx = 0f, syy = 0f, sxy = 0f;
+        for (int i = 0; i < originalVertices.Length; i++)
+        {
+            Vector3 rel = originalVertices[i] - center;
+            float h = Vector3.Dot(rel, up);
+            float x = Vector3.Dot(rel, ax), y = Vector3.Dot(rel, ay);
+            float r = Mathf.Sqrt(x * x + y * y);
+            if (r > maxRadial) maxRadial = r;
+            if (h < minH) minH = h;
+            if (h > maxH) maxH = h;
+            sxx += x * x; syy += y * y; sxy += x * y;
+        }
+        float angle = 0.5f * Mathf.Atan2(2f * sxy, sxx - syy);
+        Vector3 lateral = (Mathf.Cos(angle) * ax + Mathf.Sin(angle) * ay).normalized;
+
+        // Point it at the anatomical right: the right lung is the larger one. Same rule
+        // AirflowVisualizer uses to give that lung its three lobar branches.
+        //
+        // The same pass measures the height range of the LUNG TISSUE only (vertices well
+        // off the midline). The whole-mesh range includes the trachea, which rises far
+        // above the apices - with it, "the lower lobe" covered nearly the entire lung.
+        float minLateral = 0.30f * maxRadial;
+        int positive = 0, negative = 0;
+        float lungMinH = float.MaxValue, lungMaxH = float.MinValue;
+        for (int i = 0; i < originalVertices.Length; i++)
+        {
+            Vector3 rel = originalVertices[i] - center;
+            float lat = Vector3.Dot(rel, lateral);
+            if (lat > minLateral) positive++;
+            else if (lat < -minLateral) negative++;
+            else continue;
+
+            float h = Vector3.Dot(rel, up);
+            if (h < lungMinH) lungMinH = h;
+            if (h > lungMaxH) lungMaxH = h;
+        }
+        if (negative > positive)
+            lateral = -lateral;
+        if (lungMaxH > lungMinH)
+        {
+            minH = lungMinH;
+            maxH = lungMaxH;
+        }
+
+        foreach (Material mat in lungMaterials)
+        {
+            if (mat == null) continue;
+            mat.SetVector(LungUpOSId, new Vector4(up.x, up.y, up.z, 0f));
+            mat.SetFloat(LungRadialExtentId, Mathf.Max(1e-4f, maxRadial));
+            mat.SetVector(LungLateralOSId, new Vector4(lateral.x, lateral.y, lateral.z, 0f));
+            mat.SetVector(LungHeightRangeId, new Vector4(minH, maxH, 0f, 0f));
+            mat.SetFloat(PneumoniaSeverityId, shownPneumonia.severity);
+            mat.SetFloat(PneumoniaLeftId, shownPneumonia.left);
+            mat.SetFloat(PneumoniaRightId, shownPneumonia.right);
+            mat.SetFloat(ArdsSeverityId, ardsSeverity);
+            // The shader measures from _BreathCentre. GPU breathing sets it too, but
+            // the airway region must work even when breathing runs on the CPU.
+            mat.SetVector(BreathCentreId, new Vector4(center.x, center.y, center.z, 0f));
+            mat.SetFloat(AsthmaSeverityId, asthmaSeverity);
+        }
+    }
+
+    /// <summary>Asthma severity (0-1) for the airway-centred inflammation in the shader.</summary>
+    public void SetAsthmaSeverity(float severity01)
+    {
+        asthmaSeverity = Mathf.Clamp01(severity01);
+        if (lungMaterials == null) return;
+        foreach (Material mat in lungMaterials)
+            if (mat != null)
+                mat.SetFloat(AsthmaSeverityId, asthmaSeverity);
+    }
+
+    /// <summary>
+    /// Shows the pneumonia of the patient actually being simulated: each lung is
+    /// consolidated in proportion to the fraction BioGears has affected, so a patient
+    /// with both lungs involved shows both and a one-lung patient shows one. Only
+    /// touches the materials when the patient changes.
+    /// </summary>
+    void SyncPneumonia()
+    {
+        BioGearsNativeRespiratory.PneumoniaExtent pn = bioGearsSystem.ActivePneumonia;
+        if (pn.Same(shownPneumonia))
+            return;
+
+        shownPneumonia = pn;
+        SetOnMaterials(PneumoniaSeverityId, pn.severity);
+        SetOnMaterials(PneumoniaLeftId, pn.left);
+        SetOnMaterials(PneumoniaRightId, pn.right);
+    }
+
+    /// <summary>ARDS severity (0-1): diffuse, bilateral wet lungs.</summary>
+    public void SetArdsSeverity(float severity01)
+    {
+        ardsSeverity = Mathf.Clamp01(severity01);
+        SetOnMaterials(ArdsSeverityId, ardsSeverity);
+    }
+
+    void SetOnMaterials(int id, float value)
+    {
+        if (lungMaterials == null) return;
+        foreach (Material mat in lungMaterials)
+            if (mat != null)
+                mat.SetFloat(id, value);
+    }
+
+    public void SetHighlightAffectedRegions(bool on) => highlightAffectedRegions = on;
+
+    // Fades rather than snapping, and only touches the materials while it is moving.
+    void UpdateHighlight()
+    {
+        float target = highlightAffectedRegions ? 1f : 0f;
+        if (Mathf.Approximately(highlightAmount, target) || lungMaterials == null)
+            return;
+
+        highlightAmount = Mathf.MoveTowards(highlightAmount, target, highlightFadeSpeed * Time.deltaTime);
+        foreach (Material mat in lungMaterials)
+            if (mat != null)
+                mat.SetFloat(HighlightAmountId, highlightAmount);
     }
 
     /// <summary>
@@ -466,6 +700,11 @@ public class LungMeshDeformer : MonoBehaviour
         }
 
         mesh.uv = uvs;
+        // The tissue shader's normal maps need tangents, and those depend on the UVs -
+        // a mesh built at run time (a patient's lung) has none, which renders as black
+        // patches. Recompute them for the UVs just generated.
+        if (mesh.normals != null && mesh.normals.Length == uvs.Length)
+            mesh.RecalculateTangents();
         Debug.Log($"LungMeshDeformer: Mesh had no usable UVs - generated a cylindrical unwrap for {uvs.Length} vertices so the smoking stain varies across the tissue.");
     }
 

@@ -82,7 +82,7 @@ public static class BioGearsIntakeUIBuilder
         Canvas[] existingCanvases = Object.FindObjectsByType<Canvas>(FindObjectsInactive.Include, FindObjectsSortMode.None);
         foreach (Canvas c in existingCanvases)
         {
-            if (c == null) continue;
+            if (c == null || VitalsMonitorBuilder.IsMonitor(c)) continue;
 
             RectTransform rt = c.GetComponent<RectTransform>();
             if (c.transform.parent == null)
@@ -200,6 +200,7 @@ public static class BioGearsIntakeUIBuilder
         so.FindProperty("bio").objectReferenceValue = bio;
         so.FindProperty("lungVisual").objectReferenceValue = lungVisual;
         so.FindProperty("asthmaSlider").objectReferenceValue = asthmaSlider;
+        so.FindProperty("asthmaText").objectReferenceValue = asthmaRow.label;
         so.FindProperty("exerciseSlider").objectReferenceValue = exerciseSlider;
         so.FindProperty("smokingYearsSlider").objectReferenceValue = smokingSlider;
         so.FindProperty("smokingYearsText").objectReferenceValue = smokingRow.label;

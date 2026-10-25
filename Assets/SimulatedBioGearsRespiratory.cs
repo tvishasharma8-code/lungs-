@@ -33,6 +33,7 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
     [SerializeField] [Range(0, 1)] private float asthmaSeverity = 0f;
     [SerializeField] [Range(0, 1)] private float copdSeverity = 0f;
     [SerializeField] [Range(0, 1)] private float respiratoryDistressSeverity = 0f;
+    [SerializeField] [Range(0, 1)] private float pneumoniaSeverity = 0f;
     [SerializeField] [Range(0, 1)] private float exerciseIntensity = 0f;
 
     [Header("Variability")]
@@ -136,6 +137,9 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
             case "ards":
                 respiratoryDistressSeverity = severity;
                 break;
+            case "pneumonia":
+                pneumoniaSeverity = severity;
+                break;
             case "exercise":
                 exerciseIntensity = severity;
                 break;
@@ -153,6 +157,7 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
         currentRespirationRate += asthmaSeverity * 10f;          // Asthma: increased rate
         currentRespirationRate += copdSeverity * 6f;             // COPD: moderately increased
         currentRespirationRate += respiratoryDistressSeverity * 16f; // ARDS: significantly increased
+        currentRespirationRate += pneumoniaSeverity * 10f;       // Pneumonia: rapid, shallow breathing
         currentRespirationRate += exerciseIntensity * 20f;       // Exercise: up to 34 breaths/min
 
         // Tidal volume
@@ -160,12 +165,14 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
         currentTidalVolume *= (1f - asthmaSeverity * 0.3f);      // Asthma: reduced tidal volume
         currentTidalVolume *= (1f - copdSeverity * 0.25f);       // COPD: reduced
         currentTidalVolume *= (1f - respiratoryDistressSeverity * 0.4f); // ARDS: greatly reduced
+        currentTidalVolume *= (1f - pneumoniaSeverity * 0.3f);   // Pneumonia: consolidated lobe takes no air
         currentTidalVolume += exerciseIntensity * 1500f;         // Exercise: up to ~2000 mL
 
         // Functional residual capacity
         currentFRC = baseFRC;
         currentFRC *= (1f + copdSeverity * 0.4f);               // COPD: hyperinflation
         currentFRC *= (1f - respiratoryDistressSeverity * 0.2f); // ARDS: decreased compliance
+        currentFRC *= (1f - pneumoniaSeverity * 0.15f);          // Pneumonia: fluid-filled alveoli
 
         // I:E ratio
         currentIERatio = baseIERatio;
@@ -177,12 +184,14 @@ public class SimulatedBioGearsRespiratory : MonoBehaviour, IBioGearsRespiratoryS
         currentSpO2 -= asthmaSeverity * 0.08f;
         currentSpO2 -= copdSeverity * 0.06f;
         currentSpO2 -= respiratoryDistressSeverity * 0.15f;
+        currentSpO2 -= pneumoniaSeverity * 0.10f;
         currentSpO2 = Mathf.Clamp(currentSpO2, 0.7f, 1f);
 
         // Heart rate
         currentHeartRate = baseHeartRate;
         currentHeartRate += asthmaSeverity * 20f;
         currentHeartRate += respiratoryDistressSeverity * 30f;
+        currentHeartRate += pneumoniaSeverity * 25f;             // Pneumonia: fever, tachycardia
         currentHeartRate += exerciseIntensity * 80f;             // Exercise: up to 150+ bpm
 
         // Total lung volume (FRC + current tidal volume contribution)

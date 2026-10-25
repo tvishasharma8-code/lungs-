@@ -33,28 +33,68 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     [Tooltip("Optional explicit fallback. If left empty one is added automatically on this GameObject when needed.")]
     public SimulatedBioGearsRespiratory fallback;
 
+    [Header("Remote engine (standalone Quest -> PC running BioGearsStreamServer)")]
+    [Tooltip("Where native BioGears can't run (the Quest), find a PC on the same Wi-Fi that is running this project with BioGearsStreamServer and use its real engine. The simulated model covers any time the PC isn't reachable.")]
+    public bool connectToPcServer = true;
+    [Tooltip("PC address to use instead of finding it automatically (leave empty to discover). For networks that block broadcast.")]
+    public string pcServerAddress = "";
+    [Tooltip("Testing only: on Windows, skip the native engine and connect to a PC server as a headset would.")]
+    public bool useRemoteEvenOnWindows = false;
+
     [Header("Status (read-only)")]
     public bool usingNativeEngine;
     public string statusMessage = "Not started";
+
+    BioGearsLinkClient remote;
+    bool remoteActive;
+    BioGearsLinkProtocol.Snapshot lastRemoteSnapshot;
+    PneumoniaExtent remotePneumonia;
+    AndroidJavaObject multicastLock;
+
+    /// <summary>True while the physiology is coming from a PC's real BioGears over the network.</summary>
+    public bool usingRemoteEngine => remoteActive;
+
+    /// <summary>IP of the BioGears PC found on the network (headset only), else null.</summary>
+    public string PcAddress => remote?.ServerAddress;
+
+    // Values come from the snapshot fields (filled by the native engine thread, or from
+    // the PC over the network) rather than from the simulated model.
+    bool UseSnapshot => usingNativeEngine || remoteActive;
+
+    /// <summary>Where the numbers come from, for the monitor.</summary>
+    public string SourceDescription =>
+        usingNativeEngine ? "BioGears engine"
+        : remoteActive ? $"BioGears on PC '{remote.ServerName}' (Wi-Fi)"
+        : remote != null ? "simulated model - looking for BioGears PC..."
+        : "simulated model";
 
     struct SeverityBucket
     {
         public string StateFile;
         public double Bronchitis;
         public double Emphysema;
+        // Lobar pneumonia (0 = none): severity and fraction of each lung consolidated.
+        public double Pneumonia;
+        public double PneumoniaLeft;
+        public double PneumoniaRight;
         public SeverityBucket(string stateFile, double bronchitis, double emphysema)
         {
             StateFile = stateFile;
             Bronchitis = bronchitis;
             Emphysema = emphysema;
+            Pneumonia = PneumoniaLeft = PneumoniaRight = 0.0;
         }
+        public static SeverityBucket WithPneumonia(string stateFile, double severity, double left, double right) =>
+            new SeverityBucket(stateFile, 0.0, 0.0) { Pneumonia = severity, PneumoniaLeft = left, PneumoniaRight = right };
     }
 
-    // Must match the buckets pre-stabilized offline (see BioGears/wrapper precompute
-    // tooling). Severity thresholds below pick the nearest bucket for a 0-1 COPD
-    // severity request - if you add/change buckets here you must also regenerate the
-    // matching state files, otherwise LoadState will fail and this falls back to a
-    // live (multi-minute) InitializeEngineWithCOPD.
+    // Must match the buckets pre-stabilized offline (BioGears/wrapper/precompute_states.ps1
+    // - same file names, same values). If you add/change buckets here you must also
+    // regenerate the matching state files, otherwise LoadState fails and this falls back
+    // to a live (multi-minute) stabilization.
+    //
+    // A patient has one chronic baseline at a time: the COPD buckets (driven by
+    // smoking) or a pneumonia bucket. Pneumonia takes priority while it is set.
     static readonly SeverityBucket[] Buckets =
     {
         new SeverityBucket("healthy.xml",     0.00, 0.00),
@@ -62,7 +102,16 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         new SeverityBucket("moderate.xml",    0.35, 0.15),
         new SeverityBucket("significant.xml", 0.55, 0.35),
         new SeverityBucket("severe.xml",      0.75, 0.60),
+        SeverityBucket.WithPneumonia("pneumonia_mild.xml",   0.30, 0.00, 0.40),
+        SeverityBucket.WithPneumonia("pneumonia_severe.xml", 0.70, 0.00, 0.70),
     };
+    const int CopdBucketCount = 5;
+    const int PneumoniaMildBucket = 5;
+    const int PneumoniaSevereBucket = 6;
+
+    // The two baselines are requested independently; targetBucket is whichever wins.
+    volatile int copdBucket;
+    volatile int pneumoniaBucket = -1;
 
     #region P/Invoke
 
@@ -78,6 +127,10 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     [DllImport(DLL)] static extern void BG_DestroyEngine();
     [DllImport(DLL)] static extern IntPtr BG_GetLastError();
     [DllImport(DLL)] static extern int BG_ApplyAsthmaAttack(double severity);
+    [DllImport(DLL)] static extern int BG_ApplyAcuteRespiratoryDistress(double severity);
+    // 1 = breath queued, 2 = previous breath still running (nothing queued), 0 = error.
+    [DllImport(DLL)] static extern int BG_PacedBreath(double tidalVolume_mL, double inhaleSeconds, double exhaleSeconds);
+    [DllImport(DLL)] static extern int BG_InitializeEngineWithPneumonia(string patientFile, double severity, double leftAffected, double rightAffected);
     [DllImport(DLL)] static extern int BG_ApplyExercise(double intensity);
     [DllImport(DLL)] static extern int BG_ApplyNutrition(double carbohydrate_g, double fat_g, double protein_g, double sodium_g, double water_mL);
     [DllImport(DLL)] static extern int BG_SetOxygenSaturationOverride(double oxygenSaturation);
@@ -102,6 +155,27 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     }
 
     [DllImport(DLL)] static extern int BG_GetRespiratorySnapshot(ref BG_RespiratoryData data);
+    // Added to the wrapper for gas exchange / lung mechanics. Must match the C++ struct
+    // field for field; -1 means BioGears has not computed that value.
+    [StructLayout(LayoutKind.Sequential)]
+    struct BG_GasExchangeData
+    {
+        public double oxygenConsumption_mL_per_min;
+        public double carbonDioxideProduction_mL_per_min;
+        public double respiratoryExchangeRatio;
+        public double pulmonaryResistance_cmH2O_s_per_L;
+        public double pulmonaryCompliance_L_per_cmH2O;
+        public double alveolarVentilation_L_per_min;
+        public double deadSpaceVentilation_L_per_min;
+        public double alveolarArterialGradient_mmHg;
+        public double arterialO2Pressure_mmHg;
+        public double arterialCO2Pressure_mmHg;
+        public double carricoIndex_mmHg;
+    }
+
+    [DllImport(DLL)] static extern int BG_GetGasExchangeSnapshot(ref BG_GasExchangeData data);
+    [DllImport(DLL)] static extern double BG_GetMeanArterialPressure();
+    [DllImport(DLL)] static extern double BG_GetEndTidalCarbonDioxideFraction();
 
     static string LastNativeError()
     {
@@ -134,6 +208,16 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     float snapOxygenSaturation;
     float snapPulseOximetry;
     float snapCarbonMonoxideSaturation;
+    float snapLeftLungVolume = float.NaN;
+    float snapRightLungVolume = float.NaN;
+    float snapMinuteVentilation;
+    float snapTranspulmonaryPressure = float.NaN;
+    float snapMeanArterialPressure = float.NaN;
+    float snapEndTidalCO2 = float.NaN;
+    BG_GasExchangeData snapGas = UnavailableGas();
+    // False once the loaded DLL turns out to predate BG_GetGasExchangeSnapshot, so an
+    // old plugin just leaves those read-outs blank instead of failing every publish.
+    static bool gasExchangeExport = true;
     volatile bool engineRunning;
 
     // Breathing waveform is computed locally every Unity frame from the live
@@ -172,26 +256,113 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     volatile bool pendingExercise;
     volatile float pendingExerciseSeverity;
 
+    // ARDS is a live action like asthma: persistent state, reapplied after bucket loads.
+    volatile bool hasArdsSeverity;
+    volatile float ardsSeverity;
+    volatile bool ardsDirty;
+    static bool ardsExport = true; // false once an older DLL without it is detected
+
+    /// <summary>Lobar pneumonia severity last requested from the UI (0-1).</summary>
+    public float PneumoniaSeverity { get; private set; }
+
+    /// <summary>Pneumonia in the patient actually being simulated: overall severity and
+    /// the fraction (0-1) of each lung consolidated.</summary>
+    public struct PneumoniaExtent
+    {
+        public float severity, left, right;
+        public bool Same(PneumoniaExtent o) =>
+            Mathf.Approximately(severity, o.severity) && Mathf.Approximately(left, o.left) && Mathf.Approximately(right, o.right);
+    }
+
+    /// <summary>
+    /// What the lungs should look like, taken from the patient rather than the slider.
+    /// Real engine: the loaded state's own pneumonia settings, so a patient with both
+    /// lungs affected shows both, one lung shows one - and during a reload the old
+    /// patient is still shown until the new one is in. Simulated model: it has no
+    /// per-lung data, so it borrows the split of the real-engine patient for that severity.
+    /// </summary>
+    public PneumoniaExtent ActivePneumonia
+    {
+        get
+        {
+            if (remoteActive)
+                return remotePneumonia; // the PC's loaded patient
+
+            int b = usingNativeEngine ? loadedBucket : PneumoniaBucketFor(PneumoniaSeverity);
+            if (b < 0 || b >= Buckets.Length || Buckets[b].Pneumonia <= 0.0)
+                return default;
+            SeverityBucket k = Buckets[b];
+            return new PneumoniaExtent
+            {
+                severity = usingNativeEngine ? (float)k.Pneumonia : PneumoniaSeverity,
+                left = (float)k.PneumoniaLeft,
+                right = (float)k.PneumoniaRight,
+            };
+        }
+    }
+
+    // Slider severity -> which precomputed pneumonia patient (or -1 for none).
+    static int PneumoniaBucketFor(float severity01) =>
+        severity01 < 0.15f ? -1 : severity01 < 0.55f ? PneumoniaMildBucket : PneumoniaSevereBucket;
+    /// <summary>ARDS severity last requested (0-1).</summary>
+    public float ArdsSeverity { get; private set; }
+
     string DataDir => Path.Combine(Application.streamingAssetsPath, dataFolderName);
     string StatesDir => Path.Combine(DataDir, "states");
 
     // ---- IBioGearsRespiratorySystem ----
-    public float RespirationRate => usingNativeEngine ? snapRespirationRate : fallback.RespirationRate;
-    public float TidalVolume => usingNativeEngine ? snapTidalVolume : fallback.TidalVolume;
-    public float TotalLungVolume => usingNativeEngine ? snapTotalLungVolume : fallback.TotalLungVolume;
-    public float FunctionalResidualCapacity => usingNativeEngine ? snapFRC : fallback.FunctionalResidualCapacity;
-    public float InspiratoryExpiratoryRatio => usingNativeEngine ? snapIERatio : fallback.InspiratoryExpiratoryRatio;
-    public float BreathingPhase => usingNativeEngine ? phase : fallback.BreathingPhase;
-    public float ExpansionFactor => usingNativeEngine ? expansion : fallback.ExpansionFactor;
-    public float OxygenSaturation => usingNativeEngine ? snapOxygenSaturation : fallback.OxygenSaturation;
-    public float HeartRate => usingNativeEngine ? snapHeartRate : fallback.HeartRate;
-    public bool IsRunning => usingNativeEngine ? engineRunning : fallback.IsRunning;
+    public float RespirationRate => UseSnapshot ? snapRespirationRate : fallback.RespirationRate;
+    public float TidalVolume => UseSnapshot ? snapTidalVolume : fallback.TidalVolume;
+    public float TotalLungVolume => UseSnapshot ? snapTotalLungVolume : fallback.TotalLungVolume;
+    public float FunctionalResidualCapacity => UseSnapshot ? snapFRC : fallback.FunctionalResidualCapacity;
+    public float InspiratoryExpiratoryRatio => UseSnapshot ? snapIERatio : fallback.InspiratoryExpiratoryRatio;
+    public float BreathingPhase => UseSnapshot ? phase : fallback.BreathingPhase;
+    public float ExpansionFactor => UseSnapshot ? expansion : fallback.ExpansionFactor;
+    public float OxygenSaturation => UseSnapshot ? snapOxygenSaturation : fallback.OxygenSaturation;
+    public float HeartRate => UseSnapshot ? snapHeartRate : fallback.HeartRate;
+    public bool IsRunning => UseSnapshot ? engineRunning : fallback.IsRunning;
 
     // Extra smoking-relevant readouts not on the shared interface (real markers, not
     // just a cosmetic tint): carboxyhemoglobin rises with smoking independently of
     // COPD, and pulse oximetry is the clinically-displayed SpO2 proxy.
-    public float PulseOximetry => usingNativeEngine ? snapPulseOximetry : OxygenSaturation;
-    public float CarbonMonoxideSaturation => usingNativeEngine ? snapCarbonMonoxideSaturation : 0f;
+    public float PulseOximetry => UseSnapshot ? snapPulseOximetry : OxygenSaturation;
+    public float CarbonMonoxideSaturation => UseSnapshot ? snapCarbonMonoxideSaturation : 0f;
+
+    // Further engine outputs for the vitals monitor. The simulated model doesn't
+    // compute the left/right split, pressures or CO2, so those are NaN in fallback mode
+    // and the monitor shows "--" rather than a made-up number.
+    public float LeftLungVolume => UseSnapshot ? snapLeftLungVolume : float.NaN;     // mL
+    public float RightLungVolume => UseSnapshot ? snapRightLungVolume : float.NaN;   // mL
+    public float MinuteVentilation => UseSnapshot                                    // L/min
+        ? snapMinuteVentilation
+        : fallback.RespirationRate * fallback.TidalVolume / 1000f;
+    public float TranspulmonaryPressure => UseSnapshot ? snapTranspulmonaryPressure : float.NaN; // cmH2O
+    public float MeanArterialPressure => UseSnapshot ? snapMeanArterialPressure : float.NaN;     // mmHg
+    public float EndTidalCO2Fraction => UseSnapshot ? snapEndTidalCO2 : float.NaN;               // 0-1
+
+    // Gas exchange and lung mechanics (real engine, local or remote; NaN otherwise).
+    public float OxygenConsumption => Gas(snapGas.oxygenConsumption_mL_per_min);              // mL/min
+    public float CarbonDioxideProduction => Gas(snapGas.carbonDioxideProduction_mL_per_min);  // mL/min
+    public float RespiratoryExchangeRatio => Gas(snapGas.respiratoryExchangeRatio);
+    public float AirwayResistance => Gas(snapGas.pulmonaryResistance_cmH2O_s_per_L);          // cmH2O.s/L
+    public float LungCompliance => Gas(snapGas.pulmonaryCompliance_L_per_cmH2O);              // L/cmH2O
+    public float AlveolarVentilation => Gas(snapGas.alveolarVentilation_L_per_min);           // L/min
+    public float DeadSpaceVentilation => Gas(snapGas.deadSpaceVentilation_L_per_min);         // L/min
+    public float AlveolarArterialGradient => Gas(snapGas.alveolarArterialGradient_mmHg);      // mmHg
+    public float ArterialO2Pressure => Gas(snapGas.arterialO2Pressure_mmHg);                  // mmHg
+    public float ArterialCO2Pressure => Gas(snapGas.arterialCO2Pressure_mmHg);                // mmHg
+    public float CarricoIndex => Gas(snapGas.carricoIndex_mmHg);                              // mmHg
+
+    float Gas(double v) => !UseSnapshot || v < 0.0 ? float.NaN : (float)v;
+
+    static BG_GasExchangeData UnavailableGas() => new BG_GasExchangeData
+    {
+        oxygenConsumption_mL_per_min = -1, carbonDioxideProduction_mL_per_min = -1,
+        respiratoryExchangeRatio = -1, pulmonaryResistance_cmH2O_s_per_L = -1,
+        pulmonaryCompliance_L_per_cmH2O = -1, alveolarVentilation_L_per_min = -1,
+        deadSpaceVentilation_L_per_min = -1, alveolarArterialGradient_mmHg = -1,
+        arterialO2Pressure_mmHg = -1, arterialCO2Pressure_mmHg = -1, carricoIndex_mmHg = -1,
+    };
 
     void Awake()
     {
@@ -214,9 +385,12 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         bool windowsTarget = Application.platform == RuntimePlatform.WindowsEditor
             || Application.platform == RuntimePlatform.WindowsPlayer;
 
-        if (!windowsTarget)
+        if (!windowsTarget || useRemoteEvenOnWindows)
         {
-            ActivateFallback("Native BioGears only runs on Windows Editor/Standalone (no Android/iOS build of the engine exists). Using the simulated model on this platform.");
+            ActivateFallback(windowsTarget
+                ? "useRemoteEvenOnWindows is on: skipping the native engine and acting as a headset (simulated model until a BioGears PC is found)."
+                : "Native BioGears only runs on Windows Editor/Standalone (no Android/iOS build of the engine exists). Using the simulated model until a BioGears PC is found on the network.");
+            StartRemoteLink();
             return;
         }
 
@@ -262,9 +436,135 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         fallback.Initialize();
     }
 
+    // ---- remote engine (Quest -> PC) ----
+
+    void StartRemoteLink()
+    {
+        if (!connectToPcServer || remote != null)
+            return;
+
+        AcquireMulticastLock();
+        try
+        {
+            remote = new BioGearsLinkClient(pcServerAddress);
+            Debug.Log(string.IsNullOrWhiteSpace(pcServerAddress)
+                ? "[BioGearsNativeRespiratory] Looking for a BioGears PC on the network..."
+                : $"[BioGearsNativeRespiratory] Connecting to the BioGears PC at {pcServerAddress}...");
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[BioGearsNativeRespiratory] Could not start the network link to a BioGears PC (" + e.Message + "). Staying on the simulated model.");
+            remote = null;
+        }
+    }
+
+    // Android drops incoming broadcast packets unless an app holds a multicast lock, so
+    // without this the Quest would never hear the PC's beacon.
+    void AcquireMulticastLock()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            // Unity 6's own handle on the activity (works with GameActivity, which this
+            // project uses); not ours to dispose.
+            AndroidJavaObject activity = UnityEngine.Android.AndroidApplication.currentActivity;
+            using (var wifi = activity.Call<AndroidJavaObject>("getSystemService", "wifi"))
+            {
+                multicastLock = wifi.Call<AndroidJavaObject>("createMulticastLock", "BioGearsLink");
+                multicastLock.Call("setReferenceCounted", false);
+                multicastLock.Call("acquire");
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[BioGearsNativeRespiratory] Could not acquire the Wi-Fi multicast lock (" + e.Message + "); automatic PC discovery may not work - set pcServerAddress instead.");
+        }
+#endif
+    }
+
+    // Copies the PC's newest snapshot into the same fields the native engine thread
+    // fills, so everything downstream works unchanged. Falls back to the simulated
+    // model if nothing has arrived for 3 seconds.
+    void PollRemote()
+    {
+        remote.Tick();
+
+        bool fresh = remote.TryGetLatest(out BioGearsLinkProtocol.Snapshot s, out double age) && age < 3.0;
+        if (fresh && !ReferenceEquals(s, lastRemoteSnapshot))
+        {
+            lastRemoteSnapshot = s;
+            lock (dataLock)
+            {
+                snapRespirationRate = s[BioGearsLinkProtocol.Field.RespirationRate];
+                snapTidalVolume = s[BioGearsLinkProtocol.Field.TidalVolume];
+                snapFRC = s[BioGearsLinkProtocol.Field.FunctionalResidualCapacity];
+                snapTotalLungVolume = s[BioGearsLinkProtocol.Field.TotalLungVolume];
+                snapIERatio = s[BioGearsLinkProtocol.Field.InspiratoryExpiratoryRatio];
+                snapHeartRate = s[BioGearsLinkProtocol.Field.HeartRate];
+                snapOxygenSaturation = s[BioGearsLinkProtocol.Field.OxygenSaturation];
+                snapPulseOximetry = s[BioGearsLinkProtocol.Field.PulseOximetry];
+                snapCarbonMonoxideSaturation = s[BioGearsLinkProtocol.Field.CarbonMonoxideSaturation];
+                snapLeftLungVolume = s[BioGearsLinkProtocol.Field.LeftLungVolume];
+                snapRightLungVolume = s[BioGearsLinkProtocol.Field.RightLungVolume];
+                snapMinuteVentilation = s[BioGearsLinkProtocol.Field.MinuteVentilation];
+                snapTranspulmonaryPressure = s[BioGearsLinkProtocol.Field.TranspulmonaryPressure];
+                snapMeanArterialPressure = s[BioGearsLinkProtocol.Field.MeanArterialPressure];
+                snapEndTidalCO2 = s[BioGearsLinkProtocol.Field.EndTidalCO2Fraction];
+                snapGas = new BG_GasExchangeData
+                {
+                    oxygenConsumption_mL_per_min = Unknown(s, BioGearsLinkProtocol.Field.OxygenConsumption),
+                    carbonDioxideProduction_mL_per_min = Unknown(s, BioGearsLinkProtocol.Field.CarbonDioxideProduction),
+                    respiratoryExchangeRatio = Unknown(s, BioGearsLinkProtocol.Field.RespiratoryExchangeRatio),
+                    pulmonaryResistance_cmH2O_s_per_L = Unknown(s, BioGearsLinkProtocol.Field.AirwayResistance),
+                    pulmonaryCompliance_L_per_cmH2O = Unknown(s, BioGearsLinkProtocol.Field.LungCompliance),
+                    alveolarVentilation_L_per_min = Unknown(s, BioGearsLinkProtocol.Field.AlveolarVentilation),
+                    deadSpaceVentilation_L_per_min = Unknown(s, BioGearsLinkProtocol.Field.DeadSpaceVentilation),
+                    alveolarArterialGradient_mmHg = Unknown(s, BioGearsLinkProtocol.Field.AlveolarArterialGradient),
+                    arterialO2Pressure_mmHg = Unknown(s, BioGearsLinkProtocol.Field.ArterialO2Pressure),
+                    arterialCO2Pressure_mmHg = Unknown(s, BioGearsLinkProtocol.Field.ArterialCO2Pressure),
+                    carricoIndex_mmHg = Unknown(s, BioGearsLinkProtocol.Field.CarricoIndex),
+                };
+            }
+            engineRunning = s.EngineRunning;
+            remotePneumonia = new PneumoniaExtent
+            {
+                severity = Zero(s[BioGearsLinkProtocol.Field.PneumoniaSeverity]),
+                left = Zero(s[BioGearsLinkProtocol.Field.PneumoniaLeft]),
+                right = Zero(s[BioGearsLinkProtocol.Field.PneumoniaRight]),
+            };
+            statusMessage = $"Running on PC '{remote.ServerName}': {s.Status}";
+        }
+
+        if (fresh != remoteActive)
+        {
+            remoteActive = fresh;
+            if (fresh)
+            {
+                Debug.Log($"[BioGearsNativeRespiratory] Connected to BioGears on PC '{remote.ServerName}' - using its real engine.");
+            }
+            else
+            {
+                statusMessage = "Lost the BioGears PC - simulated model until it is back.";
+                Debug.LogWarning("[BioGearsNativeRespiratory] " + statusMessage);
+            }
+        }
+    }
+
+    // NaN (not computed) -> the -1 sentinel the gas-exchange getters already treat as unavailable.
+    static double Unknown(BioGearsLinkProtocol.Snapshot s, BioGearsLinkProtocol.Field f)
+    {
+        float v = s[f];
+        return float.IsNaN(v) ? -1.0 : v;
+    }
+
+    static float Zero(float v) => float.IsNaN(v) ? 0f : v;
+
     void Update()
     {
-        if (!usingNativeEngine)
+        if (remote != null)
+            PollRemote();
+
+        if (!UseSnapshot)
             return;
 
         if (!engineRunning)
@@ -311,6 +611,15 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     public void ApplyCondition(string conditionName, float severity)
     {
         severity = Mathf.Clamp01(severity);
+        string name = conditionName.ToLowerInvariant();
+
+        // Remembered in both modes so the lung visuals can follow them.
+        if (name == "pneumonia") PneumoniaSeverity = severity;
+        if (name == "ards" || name == "respiratory_distress") ArdsSeverity = severity;
+
+        // Headset: the PC's engine gets it too; the local simulated model below keeps
+        // the same state so a dropped link changes nothing the user set.
+        remote?.SetDesired("cond:" + name, severity);
 
         if (!usingNativeEngine)
         {
@@ -318,11 +627,20 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
             return;
         }
 
-        switch (conditionName.ToLowerInvariant())
+        switch (name)
         {
             case "copd":
             case "smoking":
                 RequestCOPDSeverity(severity);
+                break;
+            case "pneumonia":
+                RequestPneumoniaSeverity(severity);
+                break;
+            case "ards":
+            case "respiratory_distress":
+                ardsSeverity = severity;
+                hasArdsSeverity = true;
+                ardsDirty = true;
                 break;
             case "asthma":
                 asthmaSeverity = severity;
@@ -348,6 +666,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     /// </summary>
     public void SetMeasuredOxygenSaturation(float oxygenSaturation01)
     {
+        remote?.SetDesired("spo2", Mathf.Clamp01(oxygenSaturation01));
         if (!usingNativeEngine) return;
         spo2Override = Mathf.Clamp01(oxygenSaturation01);
         hasSpO2Override = true;
@@ -355,51 +674,95 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     }
 
     /// <summary>
-    /// Sets the patient's resting respiratory rate (breaths/min) -> breathing
-    /// frequency. On the native engine this is a physiological output rather than an
-    /// input, so it is applied to the simulated model, which is also what runs on
-    /// Quest (BioGears itself is Windows-only).
+    /// Sets the breathing rate (breaths/min). On the real engine the patient is paced:
+    /// every breath is a BioGears conscious-respiration inhale/exhale at this rate and
+    /// the tidal volume below, so the lungs really breathe that way and gas exchange
+    /// follows (see BG_PacedBreath). This overrides BioGears' own breathing control, so
+    /// conditions no longer change the rate by themselves - the presets set a fitting
+    /// rate for each scenario instead. On the simulated model it sets the baseline.
     /// </summary>
     public void SetRespirationRate(float breathsPerMinute)
     {
         if (fallback != null)
             fallback.SetBaseRespirationRate(breathsPerMinute);
+        remote?.SetDesired("rr", breathsPerMinute);
 
-        if (usingNativeEngine)
-            WarnNativeOwnsRespiratoryMechanics("respiratory rate");
+        pacedRate = Mathf.Clamp(breathsPerMinute, 4f, 60f);
+        pacingRequested = true;
     }
 
     /// <summary>
-    /// Sets the patient's resting tidal volume (mL) on the respiratory model. Note the
-    /// lung deformation no longer scales with this - the breathing animation was
-    /// reverted to its earlier form, which uses a fixed amplitude.
+    /// Sets the depth of each breath (mL). Real engine: the paced tidal volume (see
+    /// SetRespirationRate). Simulated model: the baseline tidal volume.
     /// </summary>
     public void SetTidalVolume(float milliliters)
     {
         if (fallback != null)
             fallback.SetBaseTidalVolume(milliliters);
+        remote?.SetDesired("tv", milliliters);
 
-        if (usingNativeEngine)
-            WarnNativeOwnsRespiratoryMechanics("tidal volume");
+        pacedTidalVolume = Mathf.Clamp(milliliters, 100f, 3000f);
+        pacingRequested = true;
     }
 
-    // Respiratory rate and tidal volume are patient *baselines* on the simulated model,
-    // but on the real engine they are derived outputs of the physiology solve - there
-    // is no input to set them short of a BioGears SEOverride action, which this wrapper
-    // does not currently export. Rather than let the two sliders look wired while
-    // silently writing to a disabled component, say so once.
-    bool warnedNativeMechanics;
-    void WarnNativeOwnsRespiratoryMechanics(string parameterName)
+    // Paced breathing on the real engine. BioGears' SEOverride respiration-rate and
+    // tidal-volume fields only replace the REPORTED values after the physiology runs,
+    // so they would make the monitor lie; pacing drives the breathing circuit itself.
+    volatile float pacedRate = 14f;
+    volatile float pacedTidalVolume = 500f;
+    volatile bool pacingRequested;
+    static bool pacedExport = true; // false once an older DLL without BG_PacedBreath is detected
+
+    // BioGears' conscious-breathing model reaches its target volume only roughly (in
+    // testing 600 mL gave ~640, 300 gave ~490, 900 gave ~780), so the volume actually
+    // requested is corrected breath by breath from what BioGears reports it delivered.
+    // Engine thread only.
+    float commandTidalVolume = 500f;
+    float commandTarget = -1f;
+
+    // Inhale takes a third of each breath (I:E 1:2, the normal resting ratio).
+    void PaceNextBreath()
     {
-        if (warnedNativeMechanics)
+        if (!pacingRequested || !pacedExport)
             return;
 
-        warnedNativeMechanics = true;
-        Debug.LogWarning($"[BioGearsNativeRespiratory] The native BioGears engine derives {parameterName} from its own physiology, so this slider has no effect while the native engine is active (Windows Editor/Standalone). It does apply on Quest, where the simulated model drives breathing. Asthma / exercise / smoking affect the lung in both modes.");
+        float target = pacedTidalVolume;
+        if (!Mathf.Approximately(target, commandTarget))
+        {
+            // New slider value: start from it and let the correction refine it.
+            commandTarget = target;
+            commandTidalVolume = target;
+        }
+
+        float cycle = 60f / pacedRate;
+        try
+        {
+            // Queues only when the previous breath has finished; otherwise a no-op.
+            int result = BG_PacedBreath(commandTidalVolume, cycle / 3.0, cycle * 2.0 / 3.0);
+            if (result == 1)
+            {
+                // A new breath has started, so the snapshot's tidal volume is the breath
+                // that just finished. Nudge the next command toward the target - gently,
+                // so one odd breath can't swing it.
+                float delivered;
+                lock (dataLock) delivered = snapTidalVolume;
+                if (delivered > 50f)
+                {
+                    float step = Mathf.Clamp(target / delivered, 0.85f, 1.18f);
+                    commandTidalVolume = Mathf.Clamp(commandTidalVolume * step, target * 0.4f, target * 2.5f);
+                }
+            }
+        }
+        catch (EntryPointNotFoundException)
+        {
+            pacedExport = false;
+            Debug.LogWarning("[BioGearsNativeRespiratory] The loaded biogears_unity.dll has no BG_PacedBreath - the respiratory rate / tidal volume sliders won't drive the real engine until the rebuilt DLL is installed (Unity closed).");
+        }
     }
 
     public void ClearMeasuredOxygenSaturation()
     {
+        remote?.SetDesired("spo2", float.NaN); // NaN = clear
         hasSpO2Override = false;
         spo2Dirty = true; // engine thread sees hasSpO2Override==false and clears it
     }
@@ -415,15 +778,30 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         severity01 = Mathf.Clamp01(severity01);
         int nearest = 0;
         float best = float.MaxValue;
-        for (int i = 0; i < Buckets.Length; i++)
+        for (int i = 0; i < CopdBucketCount; i++)
         {
-            // Buckets are indexed 0..N-1 spread evenly across 0-1 severity for lookup.
-            float bucketPos = (float)i / (Buckets.Length - 1);
+            // COPD buckets are indexed 0..N-1 spread evenly across 0-1 severity.
+            float bucketPos = (float)i / (CopdBucketCount - 1);
             float d = Mathf.Abs(bucketPos - severity01);
             if (d < best) { best = d; nearest = i; }
         }
-        targetBucket = nearest;
+        copdBucket = nearest;
+        UpdateTargetBucket();
     }
+
+    /// <summary>
+    /// Lobar pneumonia severity (0-1) -> none / mild / severe precomputed state. While
+    /// pneumonia is set it replaces the COPD baseline; clearing it returns to the COPD
+    /// bucket the smoking slider last asked for.
+    /// </summary>
+    public void RequestPneumoniaSeverity(float severity01)
+    {
+        severity01 = Mathf.Clamp01(severity01);
+        pneumoniaBucket = PneumoniaBucketFor(severity01);
+        UpdateTargetBucket();
+    }
+
+    void UpdateTargetBucket() => targetBucket = pneumoniaBucket >= 0 ? pneumoniaBucket : copdBucket;
 
     void EngineThreadMain()
     {
@@ -495,11 +873,27 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
                 pendingExercise = false;
                 BG_ApplyExercise(pendingExerciseSeverity);
             }
+            if (ardsDirty)
+            {
+                ardsDirty = false;
+                if (hasArdsSeverity && ardsExport)
+                {
+                    try { BG_ApplyAcuteRespiratoryDistress(ardsSeverity); }
+                    catch (EntryPointNotFoundException)
+                    {
+                        ardsExport = false;
+                        Debug.LogWarning("[BioGearsNativeRespiratory] The loaded biogears_unity.dll has no BG_ApplyAcuteRespiratoryDistress - ARDS only affects the simulated model until the rebuilt DLL is installed (Unity closed).");
+                    }
+                }
+            }
 
             double now = stopwatch.Elapsed.TotalSeconds;
             double dt = now - lastElapsed;
             lastElapsed = now;
             dt = Math.Min(dt, 0.5); // guard against long stalls (breakpoints, GC, etc.)
+
+            if (engineRunning)
+                PaceNextBreath();
 
             if (engineRunning && dt > 0.0)
             {
@@ -534,6 +928,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     {
         if (hasAsthmaSeverity) asthmaDirty = true;
         if (hasSpO2Override) spo2Dirty = true;
+        if (hasArdsSeverity) ardsDirty = true;
     }
 
     bool LoadBucket(int index)
@@ -553,7 +948,18 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         // "silently wrong".
         Debug.LogWarning($"[BioGearsNativeRespiratory] No usable precomputed state at {stateFile}, running a live stabilization instead (this can take minutes).");
         var bucket = Buckets[index];
-        if (BG_InitializeEngineWithCOPD(patientFile, bucket.Bronchitis, bucket.Emphysema) != 0)
+        bool ok;
+        if (bucket.Pneumonia > 0.0)
+        {
+            try { ok = BG_InitializeEngineWithPneumonia(patientFile, bucket.Pneumonia, bucket.PneumoniaLeft, bucket.PneumoniaRight) != 0; }
+            catch (EntryPointNotFoundException) { ok = false; } // older DLL: keep the last good state
+        }
+        else
+        {
+            ok = BG_InitializeEngineWithCOPD(patientFile, bucket.Bronchitis, bucket.Emphysema) != 0;
+        }
+
+        if (ok)
         {
             loadedBucket = index;
             return true;
@@ -568,6 +974,27 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         if (BG_GetRespiratorySnapshot(ref data) == 0)
             return;
 
+        // Not part of the snapshot struct; separate getters, called here on the engine
+        // thread so they never block the main thread. They return -1 when unavailable.
+        double map = BG_GetMeanArterialPressure();
+        double etco2 = BG_GetEndTidalCarbonDioxideFraction();
+
+        BG_GasExchangeData gas = UnavailableGas();
+        if (gasExchangeExport)
+        {
+            try
+            {
+                if (BG_GetGasExchangeSnapshot(ref gas) == 0)
+                    gas = UnavailableGas();
+            }
+            catch (EntryPointNotFoundException)
+            {
+                gasExchangeExport = false;
+                gas = UnavailableGas();
+                Debug.LogWarning("[BioGearsNativeRespiratory] The loaded biogears_unity.dll predates BG_GetGasExchangeSnapshot - gas exchange read-outs will show '--'. Replace Assets/Plugins/x86_64/biogears_unity.dll with the rebuilt one (Unity closed).");
+            }
+        }
+
         lock (dataLock)
         {
             snapRespirationRate = (float)data.respirationRate;
@@ -579,8 +1006,20 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
             snapOxygenSaturation = (float)data.oxygenSaturation;
             snapPulseOximetry = (float)data.pulseOximetry;
             snapCarbonMonoxideSaturation = (float)data.carbonMonoxideSaturation;
+            // The snapshot reports a missing value as 0, and a real lung is never empty.
+            snapLeftLungVolume = data.leftLungVolume_mL > 0.0 ? (float)data.leftLungVolume_mL : float.NaN;
+            snapRightLungVolume = data.rightLungVolume_mL > 0.0 ? (float)data.rightLungVolume_mL : float.NaN;
+            snapMinuteVentilation = (float)(data.totalPulmonaryVentilation_mL_per_min / 1000.0);
+            // Can legitimately be zero or negative mid-breath, so no "unavailable" check.
+            snapTranspulmonaryPressure = (float)data.transpulmonaryPressure_cmH2O;
+            snapMeanArterialPressure = OrNaN(map);
+            snapEndTidalCO2 = OrNaN(etco2);
+            snapGas = gas;
         }
     }
+
+    // The single-value getters report "not available" as -1.
+    static float OrNaN(double v) => v < 0.0 ? float.NaN : (float)v;
 
     void OnDisable()
     {
@@ -592,5 +1031,15 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         wantStop = true;
         if (engineThread != null && engineThread.IsAlive)
             engineThread.Join(2000);
+
+        remote?.Dispose();
+        remote = null;
+        remoteActive = false;
+        if (multicastLock != null)
+        {
+            try { multicastLock.Call("release"); } catch { }
+            multicastLock.Dispose();
+            multicastLock = null;
+        }
     }
 }

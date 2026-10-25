@@ -39,6 +39,12 @@ public static class BioGearsVRSceneSetup
     const float PanelHeight = 1.15f;
     const float PanelTargetWidth = 1.15f;
 
+    // Vitals monitor to the user's left, the same distance out as the console, so the
+    // lung sits between the controls and the readings.
+    const float MonitorSideOffset = -1.50f;
+    const float MonitorHeight = 1.30f;
+    const float MonitorTargetWidth = 0.90f;
+
     // Neon medical-console palette. Dark chassis, cyan HUD accents.
     static readonly Color PanelChassis = new Color(0.020f, 0.026f, 0.035f, 0.95f);
     static readonly Color NeonPrimary = new Color(0.25f, 0.95f, 1.00f, 1f);   // cyan
@@ -197,12 +203,15 @@ public static class BioGearsVRSceneSetup
         }
 
         ResetSaturatedConditions();
+        EnsureAirflowVisualizer(deformer);
+        EnsureStreamServer();
+        EnsurePatientLoader(deformer);
 
         // --- 4. Panel: beside the lung, human sized, facing the user -----------------
         Canvas canvas = null;
         foreach (Canvas c in Object.FindObjectsByType<Canvas>(FindObjectsInactive.Include, FindObjectsSortMode.None))
         {
-            if (c.transform.parent == null) { canvas = c; break; }
+            if (c.transform.parent == null && !VitalsMonitorBuilder.IsMonitor(c)) { canvas = c; break; }
         }
 
         if (canvas != null)
@@ -213,6 +222,8 @@ public static class BioGearsVRSceneSetup
                 canvas.worldCamera = cam;
 
             EnsureRespiratoryRows(rt);
+            EnsurePresetBar(rt);
+            EnsureHighlightControls(rt);
             RelayoutRows(rt);
             ApplyNeonTheme(rt);
 
@@ -243,6 +254,13 @@ public static class BioGearsVRSceneSetup
             Debug.LogWarning("[BioGearsVRSceneSetup] No root Canvas found - skipped panel placement.");
         }
 
+        // --- 5. Vitals monitor: mirrors the console on the other side of the lung ----
+        Vector3 monitorPos = floor
+            + forward * PanelDistance
+            + right * MonitorSideOffset
+            + Vector3.up * MonitorHeight;
+        VitalsMonitorBuilder.Build(monitorPos, eye, MonitorTargetWidth, cam, PanelChassis, NeonPrimary, NeonDim);
+
         ApplyGradientBackground(cam);
         SetupSoftLighting(originT);
 
@@ -259,6 +277,8 @@ public static class BioGearsVRSceneSetup
         "TidalVolumeRow",
         "SpO2Row",
         "AsthmaRow",
+        "PneumoniaRow",
+        "ArdsRow",
         "SmokingYearsRow",
         "CigarettesPerDayRow",
         "ExerciseRow",
@@ -271,6 +291,22 @@ public static class BioGearsVRSceneSetup
 
     // Derived values, shown under the sliders. Order is top-to-bottom.
     static readonly string[] ReadoutOrder = { "PackYearsReadout", "DamageStageReadout" };
+
+    // Scenario preset buttons sit between the title and the first slider row: picking
+    // a scenario is the first thing a user does, then they fine-tune with the sliders.
+    const string PresetBarName = "ScenarioPresetBar";
+    const string ScenarioReadoutName = "ScenarioReadout";
+    const float PresetButtonHeight = 72f;
+    const float PresetButtonGap = 14f;
+    const float PresetBarHeight = PresetButtonHeight + 12f;
+    const float PresetFontSize = 34f;
+
+    // Highlight toggle and its colour legend sit at the bottom, under the read-outs:
+    // it is a viewing option, not a patient parameter.
+    const string HighlightButtonName = "ViewToggles";
+    const string HighlightLegendName = "HighlightLegend";
+    const float HighlightButtonHeight = 72f;
+    const float HighlightLegendHeight = 118f;  // three legend lines
 
     // Type sized for reading at ~1.6 m in a headset. The original 22 px labels mapped
     // to roughly 2 cm tall in world space (~0.7 degrees of arc), which is below the
@@ -386,7 +422,7 @@ public static class BioGearsVRSceneSetup
         if (models.Length == 0)
             return;
 
-        string[] fields = { "asthmaSeverity", "copdSeverity", "respiratoryDistressSeverity", "exerciseIntensity" };
+        string[] fields = { "asthmaSeverity", "copdSeverity", "respiratoryDistressSeverity", "pneumoniaSeverity", "exerciseIntensity" };
 
         foreach (SimulatedBioGearsRespiratory model in models)
         {
@@ -439,6 +475,17 @@ public static class BioGearsVRSceneSetup
                            "tidalVolumeSlider", "tidalVolumeText", rowWidth);
         CreateRowIfMissing(canvasRect, so, "CigarettesPerDayRow", "Cigarettes/Day: 20",
                            "cigarettesPerDaySlider", "cigarettesPerDayText", rowWidth);
+
+        CreateRowIfMissing(canvasRect, so, "PneumoniaRow", "Pneumonia: 0% (none)",
+                           "pneumoniaSlider", "pneumoniaText", rowWidth);
+        CreateRowIfMissing(canvasRect, so, "ArdsRow", "ARDS severity: 0%",
+                           "ardsSlider", "ardsText", rowWidth);
+
+        // The exercise row predates the read-out field; bind its existing label.
+        Transform exerciseRow = canvasRect.Find("ExerciseRow");
+        if (exerciseRow != null)
+            so.FindProperty("exerciseText").objectReferenceValue =
+                exerciseRow.GetComponentInChildren<TMPro.TextMeshProUGUI>(true);
 
         // Read-outs, not inputs: pack-years is derived, and the stage label is
         // descriptive. Both are labels with no slider.
@@ -497,6 +544,315 @@ public static class BioGearsVRSceneSetup
             textProp.objectReferenceValue = row.label;
 
         Debug.Log($"[BioGearsVRSceneSetup] Created '{rowName}' and bound it to VRUIController.{sliderField}.");
+    }
+
+    /// <summary>
+    /// Adds ScenarioPresets next to VRUIController and (re)builds one button per preset
+    /// plus a "Scenario: ..." read-out. The bar is rebuilt every run so the buttons
+    /// always match the current preset list; the buttons hold no wiring of their own
+    /// (ScenarioPresets binds them at runtime), so rebuilding loses nothing.
+    /// </summary>
+    static void EnsurePresetBar(RectTransform canvasRect)
+    {
+        VRUIController controller = Object.FindFirstObjectByType<VRUIController>(FindObjectsInactive.Include);
+        if (controller == null)
+        {
+            Debug.LogWarning("[BioGearsVRSceneSetup] No VRUIController found - scenario presets were not added.");
+            return;
+        }
+
+        ScenarioPresets presets = controller.GetComponent<ScenarioPresets>();
+        if (presets == null)
+        {
+            presets = controller.gameObject.AddComponent<ScenarioPresets>();
+            Debug.Log("[BioGearsVRSceneSetup] Added ScenarioPresets to the VRUIController object.");
+        }
+
+        // The scene saves the preset list, so presets added in code (Pneumonia, ARDS)
+        // only appear once the saved list is refreshed. Replaces any Inspector edits.
+        ScenarioPresets.Preset[] defaults = ScenarioPresets.DefaultPresets();
+        if (presets.presets == null || presets.presets.Length < defaults.Length)
+        {
+            presets.presets = defaults;
+            EditorUtility.SetDirty(presets);
+            Debug.Log($"[BioGearsVRSceneSetup] Refreshed scenario presets to the {defaults.Length} built-in ones.");
+        }
+
+        Transform oldBar = canvasRect.Find(PresetBarName);
+        if (oldBar != null)
+            Object.DestroyImmediate(oldBar.gameObject);
+
+        GameObject bar = new GameObject(PresetBarName, typeof(RectTransform));
+        bar.transform.SetParent(canvasRect, false);
+        RectTransform barRect = bar.GetComponent<RectTransform>();
+        barRect.anchorMin = new Vector2(0.5f, 1f);
+        barRect.anchorMax = new Vector2(0.5f, 1f);
+        barRect.pivot = new Vector2(0.5f, 1f);
+        float barWidth = canvasRect.sizeDelta.x - 80f;
+        barRect.sizeDelta = new Vector2(barWidth, PresetButtonHeight);
+
+        int count = presets.presets != null ? presets.presets.Length : 0;
+        float buttonWidth = count > 0 ? (barWidth - PresetButtonGap * (count - 1)) / count : 0f;
+        Button[] buttons = new Button[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            GameObject buttonGO = BioGearsIntakeUIBuilder.CreateImage(bar.transform, "Preset_" + presets.presets[i].buttonLabel, presets.idleButtonColor);
+            RectTransform br = buttonGO.GetComponent<RectTransform>();
+            br.anchorMin = new Vector2(0f, 0.5f);
+            br.anchorMax = new Vector2(0f, 0.5f);
+            br.pivot = new Vector2(0f, 0.5f);
+            br.sizeDelta = new Vector2(buttonWidth, PresetButtonHeight);
+            br.anchoredPosition = new Vector2(i * (buttonWidth + PresetButtonGap), 0f);
+
+            Button button = buttonGO.AddComponent<Button>();
+            button.targetGraphic = buttonGO.GetComponent<Image>();
+            ColorBlock colors = button.colors;
+            colors.highlightedColor = new Color(0.75f, 1f, 1f, 1f); // tint on ray hover
+            colors.pressedColor = new Color(0.55f, 0.85f, 0.9f, 1f);
+            button.colors = colors;
+
+            TMPro.TextMeshProUGUI label = BioGearsIntakeUIBuilder.CreateLabel(
+                buttonGO.transform, "Label", presets.presets[i].buttonLabel, PresetFontSize, TMPro.TextAlignmentOptions.Center);
+            label.color = presets.idleLabelColor;
+            label.raycastTarget = false; // let the ray hit the button's image, not the text
+            // Seven buttons are narrower than five; shrink a long label ("Pneumonia")
+            // rather than let it wrap or spill.
+            label.enableAutoSizing = true;
+            label.fontSizeMin = 20f;
+            label.fontSizeMax = PresetFontSize;
+            label.textWrappingMode = TMPro.TextWrappingModes.NoWrap;
+            label.margin = new Vector4(6f, 0f, 6f, 0f);
+            RectTransform lr = label.rectTransform;
+            lr.anchorMin = Vector2.zero;
+            lr.anchorMax = Vector2.one;
+            lr.offsetMin = Vector2.zero;
+            lr.offsetMax = Vector2.zero;
+
+            buttons[i] = button;
+        }
+
+        TMPro.TextMeshProUGUI readout = null;
+        Transform readoutT = canvasRect.Find(ScenarioReadoutName);
+        if (readoutT != null)
+            readout = readoutT.GetComponent<TMPro.TextMeshProUGUI>();
+        if (readout == null)
+        {
+            readout = BioGearsIntakeUIBuilder.CreateLabel(canvasRect, ScenarioReadoutName, "Scenario: Custom", 34f, TMPro.TextAlignmentOptions.Left);
+            readout.color = NeonPrimary;
+        }
+
+        SerializedObject so = new SerializedObject(presets);
+        so.FindProperty("ui").objectReferenceValue = controller;
+        so.FindProperty("scenarioText").objectReferenceValue = readout;
+        SerializedProperty buttonsProp = so.FindProperty("presetButtons");
+        buttonsProp.arraySize = count;
+        for (int i = 0; i < count; i++)
+            buttonsProp.GetArrayElementAtIndex(i).objectReferenceValue = buttons[i];
+        so.ApplyModifiedProperties();
+
+        Debug.Log($"[BioGearsVRSceneSetup] Built {count} scenario preset buttons.");
+    }
+
+    /// <summary>
+    /// (Re)builds the row of viewing toggles - "Highlight regions" and "Show airflow" -
+    /// with the colour legend under them, and binds both to VRUIController. Rebuilt
+    /// every run; the buttons hold no wiring of their own (VRUIController binds them at
+    /// runtime).
+    /// </summary>
+    static void EnsureHighlightControls(RectTransform canvasRect)
+    {
+        VRUIController controller = Object.FindFirstObjectByType<VRUIController>(FindObjectsInactive.Include);
+        if (controller == null)
+        {
+            Debug.LogWarning("[BioGearsVRSceneSetup] No VRUIController found - viewing toggles were not added.");
+            return;
+        }
+
+        // "HighlightToggle" was the single full-width button of an earlier version.
+        foreach (string name in new[] { HighlightButtonName, HighlightLegendName, "HighlightToggle" })
+        {
+            Transform old = canvasRect.Find(name);
+            if (old != null)
+                Object.DestroyImmediate(old.gameObject);
+        }
+
+        float width = canvasRect.sizeDelta.x - 80f;
+        float buttonWidth = (width - PresetButtonGap) * 0.5f;
+
+        GameObject row = new GameObject(HighlightButtonName, typeof(RectTransform));
+        row.transform.SetParent(canvasRect, false);
+        row.GetComponent<RectTransform>().sizeDelta = new Vector2(width, HighlightButtonHeight);
+
+        (Button highlight, TMPro.TextMeshProUGUI highlightLabel) =
+            CreateToggleButton(row.transform, "HighlightRegions", "Highlight regions: OFF", 0f, buttonWidth);
+        (Button airflow, TMPro.TextMeshProUGUI airflowLabel) =
+            CreateToggleButton(row.transform, "ShowAirflow", "Show airflow: OFF", buttonWidth + PresetButtonGap, buttonWidth);
+
+        // Colours match LungTissue.shader's highlight colours and AirflowVisualizer's
+        // fresh/exhaled air colours.
+        TMPro.TextMeshProUGUI legend = BioGearsIntakeUIBuilder.CreateLabel(
+            canvasRect, HighlightLegendName,
+            "<color=#FF8A20>Amber</color> = asthma airways     <color=#A070FF>Violet</color> = COPD / smoke damage\n" +
+            "<color=#4DFF73>Green</color> = pneumonia / ARDS     <color=#8C5AD9>Dim violet</color> = trapped air (COPD)\n" +
+            "<color=#66CCFF>Blue</color> = fresh air (O2-rich)     <color=#FF667A>Pink</color> = exhaled air (CO2-rich)",
+            28f, TMPro.TextAlignmentOptions.Center);
+        legend.color = NeonPrimary;
+        legend.raycastTarget = false;
+
+        SerializedObject so = new SerializedObject(controller);
+        so.FindProperty("highlightButton").objectReferenceValue = highlight;
+        so.FindProperty("highlightButtonText").objectReferenceValue = highlightLabel;
+        so.FindProperty("airflowButton").objectReferenceValue = airflow;
+        so.FindProperty("airflowButtonText").objectReferenceValue = airflowLabel;
+        so.ApplyModifiedProperties();
+
+        Debug.Log("[BioGearsVRSceneSetup] Built the highlight and airflow toggles.");
+    }
+
+    static (Button, TMPro.TextMeshProUGUI) CreateToggleButton(Transform parent, string name, string text, float left, float width)
+    {
+        GameObject buttonGO = BioGearsIntakeUIBuilder.CreateImage(parent, name, TrackColor);
+        RectTransform br = buttonGO.GetComponent<RectTransform>();
+        br.anchorMin = br.anchorMax = new Vector2(0f, 0.5f);
+        br.pivot = new Vector2(0f, 0.5f);
+        br.sizeDelta = new Vector2(width, HighlightButtonHeight);
+        br.anchoredPosition = new Vector2(left, 0f);
+
+        Button button = buttonGO.AddComponent<Button>();
+        button.targetGraphic = buttonGO.GetComponent<Image>();
+        ColorBlock colors = button.colors;
+        colors.highlightedColor = new Color(0.75f, 1f, 1f, 1f);
+        colors.pressedColor = new Color(0.55f, 0.85f, 0.9f, 1f);
+        button.colors = colors;
+
+        TMPro.TextMeshProUGUI label = BioGearsIntakeUIBuilder.CreateLabel(
+            buttonGO.transform, "Label", text, PresetFontSize, TMPro.TextAlignmentOptions.Center);
+        label.color = NeonPrimary;
+        label.raycastTarget = false;
+        RectTransform lr = label.rectTransform;
+        lr.anchorMin = Vector2.zero;
+        lr.anchorMax = Vector2.one;
+        lr.offsetMin = Vector2.zero;
+        lr.offsetMax = Vector2.zero;
+
+        return (button, label);
+    }
+
+    /// <summary>
+    /// Adds the PatientLungLoader, which swaps in a real patient's lungs from the
+    /// LungVision backend ("Send to VR" in the browser). Harmless without a backend: it
+    /// just keeps showing the built-in lung.
+    /// </summary>
+    static void EnsurePatientLoader(LungMeshDeformer deformer)
+    {
+        if (deformer == null)
+            return;
+
+        PatientLungLoader loader = Object.FindFirstObjectByType<PatientLungLoader>(FindObjectsInactive.Include);
+        if (loader == null)
+        {
+            loader = new GameObject("PatientLungLoader").AddComponent<PatientLungLoader>();
+            Debug.Log("[BioGearsVRSceneSetup] Added PatientLungLoader - patients sent from LungVision ('Send to VR') appear in the scene.");
+        }
+        loader.lung = deformer;
+        loader.airflow = Object.FindFirstObjectByType<AirflowVisualizer>(FindObjectsInactive.Include);
+        loader.bio = Object.FindFirstObjectByType<BioGearsNativeRespiratory>(FindObjectsInactive.Include);
+        EditorUtility.SetDirty(loader);
+    }
+
+    /// <summary>
+    /// Puts BioGearsStreamServer next to the engine component, so a PC running this
+    /// scene serves its real BioGears to standalone Quest headsets. On the Quest the same
+    /// component stays idle (no native engine there) and the engine component connects
+    /// to the PC instead.
+    /// </summary>
+    static void EnsureStreamServer()
+    {
+        BioGearsNativeRespiratory bio = Object.FindFirstObjectByType<BioGearsNativeRespiratory>(FindObjectsInactive.Include);
+        if (bio == null)
+        {
+            Debug.LogWarning("[BioGearsVRSceneSetup] No BioGearsNativeRespiratory found - stream server not added.");
+            return;
+        }
+
+        BioGearsStreamServer server = bio.GetComponent<BioGearsStreamServer>();
+        if (server == null)
+        {
+            server = bio.gameObject.AddComponent<BioGearsStreamServer>();
+            Debug.Log("[BioGearsVRSceneSetup] Added BioGearsStreamServer - this PC will serve BioGears to standalone Quest headsets.");
+        }
+        server.bio = bio;
+        EditorUtility.SetDirty(server);
+    }
+
+    /// <summary>
+    /// Creates (or refreshes) the airflow particle object and its material asset. The
+    /// material is saved as an asset and referenced from the scene so the shader ships
+    /// in builds - Shader.Find alone would return null in a Quest player.
+    /// </summary>
+    static void EnsureAirflowVisualizer(LungMeshDeformer deformer)
+    {
+        if (deformer == null)
+            return;
+
+        Shader shader = Shader.Find("BioGears/AirflowParticle");
+        if (shader == null)
+        {
+            Debug.LogWarning("[BioGearsVRSceneSetup] AirflowParticle shader not found - airflow not set up.");
+            return;
+        }
+
+        const string matPath = "Assets/Settings/AirflowParticle.mat";
+        Material mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+        if (mat == null)
+        {
+            mat = new Material(shader);
+            AssetDatabase.CreateAsset(mat, matPath);
+        }
+        mat.shader = shader;
+        EditorUtility.SetDirty(mat);
+
+        AirflowVisualizer airflow = Object.FindFirstObjectByType<AirflowVisualizer>(FindObjectsInactive.Include);
+        if (airflow == null)
+        {
+            // A root object, not a child of the lung: the lung's transform carries a
+            // ~1/300 scale from the CT units, which would shrink world-sized particles.
+            GameObject go = new GameObject("AirflowVisualizer");
+            airflow = go.AddComponent<AirflowVisualizer>();
+            Debug.Log("[BioGearsVRSceneSetup] Created AirflowVisualizer.");
+        }
+
+        SerializedObject so = new SerializedObject(airflow);
+        so.FindProperty("lung").objectReferenceValue = deformer;
+        so.FindProperty("bio").objectReferenceValue = Object.FindFirstObjectByType<BioGearsNativeRespiratory>();
+        so.FindProperty("particleMaterial").objectReferenceValue = mat;
+        // Earlier versions of this component saved other values into the scene, and saved
+        // values override new code defaults - so set the current (calm) look explicitly.
+        so.FindProperty("parcelCount").intValue = 350;
+        so.FindProperty("terminalsPerSide").intValue = 12;
+        so.FindProperty("particleSize").floatValue = 0.010f;
+        so.FindProperty("asthmaTurbulence").floatValue = 0.02f;
+        so.FindProperty("streaks").boolValue = false;
+        so.FindProperty("swirlTurns").floatValue = 0f;
+        so.FindProperty("tubeSpread").floatValue = 0.5f;
+        so.FindProperty("treeIdleBrightness").floatValue = 0.10f;
+        so.FindProperty("treeFlowBrightness").floatValue = 0.12f;
+        so.FindProperty("treeWidth").floatValue = 0.5f;
+        so.FindProperty("bandsPerPath").floatValue = 0f;
+        so.FindProperty("alveoliPerTerminal").intValue = 1;
+        so.FindProperty("alveolusSize").floatValue = 0.028f;
+        so.FindProperty("alveolusOpacity").floatValue = 0.35f;
+        so.FindProperty("showOxygenSparks").boolValue = false;
+        so.ApplyModifiedProperties();
+
+        // Point the particle renderer at the material in edit mode too, so the scene
+        // never saves with Unity's default particle material.
+        ParticleSystemRenderer r = airflow.GetComponent<ParticleSystemRenderer>();
+        if (r != null)
+            r.sharedMaterial = mat;
+
+        AssetDatabase.SaveAssets();
     }
 
     /// <summary>
@@ -685,6 +1041,22 @@ public static class BioGearsVRSceneSetup
         float rowWidth = canvasRect.sizeDelta.x - 80f;
         int placed = 0;
 
+        // Preset bar and its read-out go first, directly under the title; the slider
+        // rows start below whatever they take up.
+        float rowsTop = FirstRowTop;
+        RectTransform presetBar = canvasRect.Find(PresetBarName) as RectTransform;
+        if (presetBar != null)
+        {
+            PlaceTopAnchored(presetBar, rowWidth, PresetButtonHeight, rowsTop);
+            rowsTop += PresetBarHeight;
+        }
+        RectTransform scenarioReadout = canvasRect.Find(ScenarioReadoutName) as RectTransform;
+        if (scenarioReadout != null)
+        {
+            PlaceTopAnchored(scenarioReadout, rowWidth, ReadoutHeight, rowsTop);
+            rowsTop += ReadoutHeight + 10f;
+        }
+
         for (int i = 0; i < RowOrder.Length; i++)
         {
             Transform row = canvasRect.Find(RowOrder[i]);
@@ -699,7 +1071,7 @@ public static class BioGearsVRSceneSetup
             rowRect.anchorMax = new Vector2(0.5f, 1f);
             rowRect.pivot = new Vector2(0.5f, 1f);
             rowRect.sizeDelta = new Vector2(rowWidth, RowHeight);
-            rowRect.anchoredPosition = new Vector2(0f, -(FirstRowTop + RowHeight * placed));
+            rowRect.anchoredPosition = new Vector2(0f, -(rowsTop + RowHeight * placed));
 
             // Enlarge the existing label/slider in place - no rebuild, so the slider's
             // wiring and listeners survive untouched.
@@ -750,7 +1122,7 @@ public static class BioGearsVRSceneSetup
 
         // Derived read-outs sit below the sliders, tighter spacing since they are
         // single lines with no control under them.
-        float y = FirstRowTop + RowHeight * placed + 6f;
+        float y = rowsTop + RowHeight * placed + 6f;
         foreach (string readout in ReadoutOrder)
         {
             Transform t = canvasRect.Find(readout);
@@ -767,8 +1139,31 @@ public static class BioGearsVRSceneSetup
             y += ReadoutHeight;
         }
 
+        RectTransform highlightButton = canvasRect.Find(HighlightButtonName) as RectTransform;
+        if (highlightButton != null)
+        {
+            y += 12f;
+            PlaceTopAnchored(highlightButton, rowWidth, HighlightButtonHeight, y);
+            y += HighlightButtonHeight + 6f;
+        }
+        RectTransform highlightLegend = canvasRect.Find(HighlightLegendName) as RectTransform;
+        if (highlightLegend != null)
+        {
+            PlaceTopAnchored(highlightLegend, rowWidth, HighlightLegendHeight, y);
+            y += HighlightLegendHeight;
+        }
+
         canvasRect.sizeDelta = new Vector2(canvasRect.sizeDelta.x, y + BottomPadding);
         Debug.Log($"[BioGearsVRSceneSetup] Re-spaced {placed} parameter rows and trimmed the panel to fit.");
+    }
+
+    static void PlaceTopAnchored(RectTransform rect, float width, float height, float top)
+    {
+        rect.anchorMin = new Vector2(0.5f, 1f);
+        rect.anchorMax = new Vector2(0.5f, 1f);
+        rect.pivot = new Vector2(0.5f, 1f);
+        rect.sizeDelta = new Vector2(width, height);
+        rect.anchoredPosition = new Vector2(0f, -top);
     }
 
     /// <summary>
