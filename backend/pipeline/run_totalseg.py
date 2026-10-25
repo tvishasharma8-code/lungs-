@@ -29,7 +29,7 @@ import trimesh
 
 import dicom2nifti
 
-from pipeline import lung_mesh
+from pipeline import ct_refine, lung_mesh
 from pipeline.dicom_series import load_series
 
 # Structures we segment and fuse into the final lung + airway mesh.
@@ -97,6 +97,7 @@ def run_pipeline(
     fast: bool = False,
     vr_dir: Optional[str] = None,
     vr_target_triangles: int = VR_TARGET_TRIANGLES,
+    refine_with_ct: bool = True,
 ) -> PipelineResult:
     """
     Run the full DICOM -> NIfTI -> TotalSegmentator -> STL pipeline.
@@ -115,6 +116,9 @@ def run_pipeline(
     fast:           if True, passes --fast to TotalSegmentator. Kept
                     False by default to match the original script,
                     which explicitly avoids --fast for accuracy.
+    refine_with_ct: take the exact surface from the CT at native resolution
+                    (TotalSegmentator only locates the lungs and labels lobes)
+                    - see ct_refine.py. False = AI masks alone, smoothed.
     vr_dir:         if set, also writes the VR package mesh here:
                     mesh.bin (decimated, one sub-mesh per lobe + trachea)
                     and meta.json - see pipeline/lung_mesh.py.
@@ -284,15 +288,30 @@ def run_pipeline(
         progress("smooth", "Volume smoothed", 100)
         progress("mesh", "Running marching cubes", 10)
 
-        # --fast segments at 3 mm, so its masks need a stronger blur than full resolution.
-        surface = lung_mesh.extract_surface(merged, affine, sigma_mm=3.0 if fast else 2.0)
+        if refine_with_ct:
+            # The surface follows the CT at native resolution, like a 3D Slicer
+            # threshold model; TotalSegmentator only says where the lungs are and
+            # which lobe is which (see ct_refine.py). Light smoothing only - heavy
+            # smoothing erased fissures and rib impressions.
+            progress("smooth", "Refining the lung surface from the CT", 30)
+            ct_hu = np.asanyarray(nib.load(ct_nifti).dataobj).astype(np.float32)
+            surface_mask = ct_refine.refine_lung_mask(ct_hu, labels, lung_mesh.voxel_spacing_mm(affine))
+            del ct_hu
+            sigma_mm, taubin_iterations = 0.6, 10
+        else:
+            # AI masks alone: --fast works at 3 mm, so it needs a stronger blur.
+            surface_mask = merged
+            sigma_mm, taubin_iterations = (3.0 if fast else 2.0), 30
+
+        surface = lung_mesh.extract_surface(surface_mask, affine, sigma_mm=sigma_mm)
 
         mesh = trimesh.Trimesh(surface.verts_lps, surface.faces, process=False)
         mesh.remove_unreferenced_vertices()
         mesh.merge_vertices()
         mesh.update_faces(mesh.nondegenerate_faces())
+        mesh = lung_mesh.keep_main_bodies(mesh)
         progress("mesh", "Smoothing surface", 40)
-        lung_mesh.smooth_mesh(mesh, iterations=30)
+        lung_mesh.smooth_mesh(mesh, iterations=taubin_iterations)
         mesh.fix_normals()
 
         progress("mesh", "Exporting STL", 70)

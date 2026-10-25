@@ -1,0 +1,84 @@
+"""
+CT-refined lung mask: TotalSegmentator decides WHERE the lungs are and which lobe is
+which; the CT itself, at its native resolution, decides the exact surface.
+
+Why: TotalSegmentator segments at 1.5 mm (3 mm with --fast) and its masks are resampled
+back to the CT grid, so their outline is soft and blocky - and smoothing that away also
+erases real anatomy (fissures, rib impressions, crisp borders). A lung model made in
+3D Slicer by thresholding the CT (the VR app's own LungModel.fbx) is crisper because
+it follows the CT at native resolution. This module does the same automatically:
+
+  1. lung air = HU below the threshold (Slicer's lung range, -400 by default)
+  2. keep only air inside the AI lungs/trachea grown by a few mm (the AI excludes
+     air outside the body, stomach/bowel gas, etc.)
+  3. add the airway air that connects to it - the main bronchi and trachea run
+     between the AI masks, and TotalSegmentator's trachea stops early
+  4. fill vessels / airways-in-lung per axial slice, so the inside isn't full of tubes
+
+The result is a mask on the CT grid; lobes are labelled afterwards from the AI masks
+(lung_mesh.label_faces), and only light smoothing is applied.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from scipy import ndimage
+
+
+def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndarray,
+                     hu_threshold: float = -400.0, grow_mm: float = 4.0,
+                     airway_search_mm: float = 30.0, trachea_label: int | None = None) -> np.ndarray:
+    """
+    ct_hu:      CT volume in Hounsfield units, same grid as ai_labels.
+    ai_labels:  0 = background, 1..K = TotalSegmentator structures.
+    voxel_mm:   voxel size per array axis (mm).
+    Returns a boolean lung + airway mask on the CT grid.
+    """
+    ai_full = ai_labels > 0
+    if not ai_full.any():
+        return ai_full
+
+    # Work in a box around the AI lungs (plus the airway search margin): a whole CT is
+    # ~90M voxels, and the distance map below would not fit in memory for all of it.
+    margin = np.ceil(airway_search_mm / voxel_mm).astype(int) + 2
+    nz = np.nonzero(ai_full)
+    lo = np.maximum([int(a.min()) for a in nz] - margin, 0)
+    hi = np.minimum([int(a.max()) + 1 for a in nz] + margin, ai_full.shape)
+    box = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+
+    ai = ai_full[box]
+    air = ct_hu[box] < hu_threshold
+    # Distance (mm) from the AI masks; cheaper than dilating with a large sphere.
+    dist = ndimage.distance_transform_edt(~ai, sampling=voxel_mm).astype(np.float32)
+
+    # 1-2. Lung air near where the AI found lungs/trachea.
+    lung = air & (dist <= grow_mm)
+
+    # 3. Airway: air components within a wider margin of the AI masks that touch them -
+    # picks up the main bronchi and the rest of the trachea; leaves out stomach gas and
+    # air outside the body, which never touch the AI lungs.
+    search = air & (dist <= airway_search_mm)
+    del dist
+    comp, n = ndimage.label(search)
+    if n:
+        touching = np.unique(comp[lung & (comp > 0)])
+        lung |= np.isin(comp, touching[touching > 0])
+
+    # Keep the big connected parts (both lungs + airway); drop specks.
+    comp, n = ndimage.label(lung)
+    if n > 1:
+        sizes = ndimage.sum(lung, comp, index=np.arange(1, n + 1))
+        keep = np.nonzero(sizes >= 0.02 * sizes.max())[0] + 1
+        lung = np.isin(comp, keep)
+
+    # 4. Vessels and small airways inside the lung are denser than air; fill them per
+    # axial slice (like a Slicer "fill holes") so the model is solid lung, not a sponge.
+    axial = int(np.argmax(voxel_mm))  # slice axis = the largest spacing on typical CT
+    lung = np.moveaxis(lung, axial, 0)
+    for i in range(lung.shape[0]):
+        lung[i] = ndimage.binary_fill_holes(lung[i])
+    lung = np.moveaxis(lung, 0, axial)
+
+    out = np.zeros(ai_full.shape, dtype=bool)
+    out[box] = lung
+    return out
