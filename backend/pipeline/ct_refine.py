@@ -25,9 +25,29 @@ import numpy as np
 from scipy import ndimage
 
 
+def _odd_size(mm: float, voxel_mm: np.ndarray) -> tuple:
+    """A filter kernel of about `mm` per axis, in voxels, always odd and at least 1."""
+    return tuple(int(max(1, 2 * round(mm / v / 2.0) + 1)) if mm > 0 else 1 for v in voxel_mm)
+
+
+def slicer_smooth(mask: np.ndarray, voxel_mm: np.ndarray, closing_mm: float = 2.0, median_mm: float = 3.0) -> np.ndarray:
+    """
+    The 3D Slicer Segment Editor's usual clean-up, on a binary mask:
+      closing (fill small gaps/pits), then median (remove speckle and fringe).
+    Median keeps real edges and corners where a Gaussian blur rounds them off, which is
+    why a Slicer model looks crisp rather than melted.
+    """
+    if closing_mm > 0:
+        mask = ndimage.binary_closing(mask, structure=np.ones(_odd_size(closing_mm, voxel_mm), bool))
+    if median_mm > 0:
+        mask = ndimage.median_filter(mask.astype(np.uint8), size=_odd_size(median_mm, voxel_mm)) > 0
+    return mask
+
+
 def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndarray,
                      hu_threshold: float = -400.0, grow_mm: float = 4.0,
-                     airway_search_mm: float = 30.0, trachea_label: int | None = None) -> np.ndarray:
+                     airway_search_mm: float = 30.0, trachea_label: int | None = None,
+                     closing_mm: float = 2.0, median_mm: float = 3.0) -> np.ndarray:
     """
     ct_hu:      CT volume in Hounsfield units, same grid as ai_labels.
     ai_labels:  0 = background, 1..K = TotalSegmentator structures.
@@ -70,6 +90,10 @@ def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndar
         sizes = ndimage.sum(lung, comp, index=np.arange(1, n + 1))
         keep = np.nonzero(sizes >= 0.02 * sizes.max())[0] + 1
         lung = np.isin(comp, keep)
+
+    # Slicer-style clean-up of the threshold's partial-volume fringe (bumpy trachea,
+    # frayed edges) before the surface is built.
+    lung = slicer_smooth(lung, voxel_mm, closing_mm=closing_mm, median_mm=median_mm)
 
     # 4. Vessels and small airways inside the lung are denser than air; fill them per
     # axial slice (like a Slicer "fill holes") so the model is solid lung, not a sponge.
