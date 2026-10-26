@@ -171,11 +171,12 @@ def main() -> int:
           f"left-right and front-back walls agree within 15 mm (worst {max(dx[0], dx[3], dx[1], dx[4]):.1f} mm)")
     # Bottom: both stop at the diaphragm.
     check(dx[2] < 15.0, f"bottoms (diaphragm) agree within 15 mm ({dx[2]:.1f} mm)")
-    # Top: the air threshold follows the airway up to the edge of the scan, while
-    # TotalSegmentator's trachea label ends lower (on the first test patient: +26 vs
-    # -24 mm). That is a segmentation difference, not a coordinate one - so instead of
-    # a loose tolerance, require that everything the threshold finds ABOVE the mesh is
-    # airway-sized (a tube of a few cm^2), never lung-sized.
+    # Top: both follow the airway up to where the threshold's airway ends (the edge of
+    # the scan on patient 11) - the pipeline extends TotalSegmentator's short trachea
+    # through the CT air (ct_refine._extend_airway), as a 3D Slicer model does.
+    check(abs(dx[5]) < 15.0, f"tops (airway) agree within 15 mm ({dx[5]:.1f} mm)")
+    # Anything the threshold still finds above the mesh must be airway-sized (a tube of
+    # a few cm^2), never lung-sized.
     above = [i for i, s in enumerate(series.slices) if float(s.position[2]) > mesh_hi[2] + 2.0]
     px_area = series.slices[0].row_spacing * series.slices[0].col_spacing / 100.0  # cm^2
     biggest = max((float(mask[i].sum()) * px_area for i in above), default=0.0)
@@ -194,7 +195,12 @@ def main() -> int:
     check(np.median(dist) < 6.0, f"mesh surface lies on the DICOM-geometry lung surface (median {np.median(dist):.1f} mm)")
 
     # A mirrored or shifted mesh would put the centroid far off even with similar boxes.
-    mesh_centroid = verts.mean(axis=0)
+    # Volume against volume: the mask's voxels vs the volume the mesh encloses (sum of
+    # signed tetrahedra). The plain vertex mean is a surface average weighted by where
+    # decimation kept detail - on A0265 it sat 24 mm off with walls agreeing to 0.7 mm.
+    tri = verts[np.concatenate(list(indices.values())).reshape(-1, 3).astype(np.int64)].astype(np.float64)
+    vol = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])) / 6.0
+    mesh_centroid = (vol[:, None] * tri.sum(axis=1) / 4.0).sum(axis=0) / vol.sum()
     off = np.linalg.norm(mesh_centroid[:2] - thr_centroid[:2])
     check(off < 15.0, f"centroids agree left-right / front-back within 15 mm ({off:.1f} mm)")
 

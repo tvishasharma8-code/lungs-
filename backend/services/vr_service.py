@@ -9,7 +9,9 @@ since the web app otherwise keeps no history.
 Layout (one folder per patient):
     <VR_ROOT>/<patient_id>/meta.json      frame, centre, bbox, structures (lung_mesh.write_meta)
                           /mesh.bin       decimated lobe-labelled mesh (lung_mesh.write_mesh_bin)
-                          /findings.json  tumor findings (empty list until detection has run)
+                          /findings.json  tumors + flagged slices (tumor_cluster.findings_document),
+                                          empty lists if detection didn't run
+                          /slices/NNN.png flagged CT slices, boxes drawn (NNN = slice index)
                           /package.json   label, created time, what's inside
     <VR_ROOT>/active.json                 {"id": ...} - the patient the VR app should show
 
@@ -35,6 +37,7 @@ os.makedirs(VR_ROOT, exist_ok=True)
 
 PACKAGE_FILES = ("meta.json", "mesh.bin", "findings.json")
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SLICE_RE = re.compile(r"^slices/\d{3,5}\.png$")
 
 
 class PackageError(ValueError):
@@ -49,12 +52,16 @@ def _patient_dir(patient_id: str) -> str:
 
 
 def package_file(patient_id: str, name: str) -> str:
-    if name not in PACKAGE_FILES:
+    if name not in PACKAGE_FILES and not _SLICE_RE.match(name):
         raise PackageError(f"Unknown package file: {name}")
     path = os.path.join(_patient_dir(patient_id), name)
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
     return path
+
+
+def package_id_for_job(job_id: str) -> str:
+    return job_id.replace("-", "")[:12]
 
 
 def create_package(job_id: str, vr_mesh_dir: str, findings: Optional[dict], label: Optional[str]) -> dict:
@@ -63,7 +70,7 @@ def create_package(job_id: str, vr_mesh_dir: str, findings: Optional[dict], labe
         if not os.path.isfile(os.path.join(vr_mesh_dir, name)):
             raise FileNotFoundError(f"This job has no VR mesh ({name} missing) - run 3D reconstruction first.")
 
-    patient_id = job_id.replace("-", "")[:12]
+    patient_id = package_id_for_job(job_id)
     dest = _patient_dir(patient_id)
     tmp = dest + ".partial"
     shutil.rmtree(tmp, ignore_errors=True)
@@ -74,6 +81,13 @@ def create_package(job_id: str, vr_mesh_dir: str, findings: Optional[dict], labe
     with open(os.path.join(tmp, "meta.json"), encoding="utf-8") as fh:
         meta = json.load(fh)
 
+    # Detection's findings.json + slices/ sit in the same job folder (tumor_service.py).
+    src_findings = os.path.join(vr_mesh_dir, "findings.json")
+    if findings is None and os.path.isfile(src_findings):
+        with open(src_findings, encoding="utf-8") as fh:
+            findings = json.load(fh)
+        if os.path.isdir(os.path.join(vr_mesh_dir, "slices")):
+            shutil.copytree(os.path.join(vr_mesh_dir, "slices"), os.path.join(tmp, "slices"))
     with open(os.path.join(tmp, "findings.json"), "w", encoding="utf-8") as fh:
         json.dump(findings or {"frame": "DICOM_LPS_mm", "tumors": [], "slices": []}, fh, indent=2)
 
@@ -84,6 +98,7 @@ def create_package(job_id: str, vr_mesh_dir: str, findings: Optional[dict], labe
         "triangles": meta.get("triangles"),
         "structures": [s["name"] for s in meta.get("structures", [])],
         "has_findings": bool(findings and findings.get("tumors")),
+        "tumors": len(findings.get("tumors", [])) if findings else 0,
     }
     with open(os.path.join(tmp, "package.json"), "w", encoding="utf-8") as fh:
         json.dump(info, fh, indent=2)

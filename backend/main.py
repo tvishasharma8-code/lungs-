@@ -16,7 +16,14 @@ Endpoints:
     GET    /api/vr/active                     {"id": ...} the patient VR should show
     POST   /api/vr/active/{patient_id}        choose the patient VR should show
     GET    /api/vr/patients/{id}/{file}       meta.json | mesh.bin | findings.json
+    GET    /api/vr/patients/{id}/slices/NNN.png  flagged CT slice NNN, boxes drawn
     DELETE /api/vr/patients/{id}              remove a kept patient
+
+  Desktop Unity app (see services/unity_service.py; only from this PC):
+    GET    /api/unity/status                  {"built": ..., "running": ..., "editor": ...}
+    POST   /api/unity/view/{job_id}           send the job's model to VR (if not yet), make it
+                                              active, open the desktop app if it isn't open
+                                              (no build: the open Unity Editor shows it)
 
 No login, no database. Uploaded files and generated outputs live only
 in the OS temp folder and are removed by /api/reset (also called
@@ -32,6 +39,7 @@ from __future__ import annotations
 import inspect
 import io
 import os
+import re
 import shutil
 import uuid
 
@@ -51,7 +59,7 @@ from models.schemas import (
 )
 from pipeline.dicom_series import safe_relative_path
 from pipeline.tumor_infer import list_series_files, normalize_to_grayscale_uint8
-from services import analysis_service, vr_service
+from services import analysis_service, unity_service, vr_service
 from services.progress_service import job_store
 
 app = FastAPI(title="LungVision API", version="0.1.0")
@@ -217,19 +225,63 @@ def reset(session_id: str, job_id: str | None = None) -> dict:
 
 # ---------------------------------------------------------------- VR app
 
+# Job ids are uuid4 strings; checked before one is used in a folder name.
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
 @app.post("/api/vr/send/{job_id}")
 def vr_send(job_id: str, label: str | None = None) -> dict:
     job = job_store.get(job_id)
+    vr_dir = analysis_service.vr_output_dir(job_id) if _JOB_ID_RE.match(job_id) else None
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    if job.state != JobState.COMPLETED or not job.results.reconstruction:
+        # Jobs live in memory, so a backend restart forgets them - but a finished job's
+        # model is still on disk until "New Analysis", and that is all a package needs.
+        if not vr_dir or not os.path.isfile(os.path.join(vr_dir, "mesh.bin")):
+            raise HTTPException(status_code=404, detail="Job not found.")
+    elif job.state != JobState.COMPLETED or not job.results.reconstruction:
         raise HTTPException(status_code=409, detail="Send to VR needs a completed 3D reconstruction.")
-    vr_dir = os.path.join(analysis_service.OUTPUT_ROOT, f"{job_id}_vr")
-    # Findings join the package once detection reports positions in mm (plan I1.2/I1.3).
     try:
         return vr_service.create_package(job_id, vr_dir, findings=None, label=label)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _require_local(request: Request) -> None:
+    # Starting a program is for the person at this PC, not for others on the network
+    # when the backend is bound to 0.0.0.0 for a Quest.
+    if not request.client or request.client.host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="View in Unity only works from the PC running LungVision.")
+
+
+@app.get("/api/unity/status")
+def unity_status() -> dict:
+    return {"built": unity_service.is_built(), "running": unity_service.is_running(),
+            "editor": unity_service.editor_running()}
+
+
+@app.post("/api/unity/view/{job_id}")
+def unity_view(job_id: str, request: Request, label: str | None = None) -> dict:
+    _require_local(request)
+    patient_id = vr_service.package_id_for_job(job_id)
+    known = any(p.get("id") == patient_id for p in vr_service.list_packages())
+    patient = vr_send(job_id, label) if not known else {"id": patient_id}
+    if known:
+        vr_service.set_active(patient_id)
+    # The patient is active now, so anything following it (headset, Editor in Play mode,
+    # desktop app) switches to it. Then open the desktop app if there is one.
+    if not unity_service.is_built():
+        if unity_service.editor_running():
+            return {"id": patient["id"], "started": False, "mode": "editor"}
+        raise HTTPException(status_code=404, detail=(
+            "The Unity desktop app isn't built and the Unity Editor isn't open. Open the "
+            "project in Unity and press Play, or build the app once: BioGears > Build "
+            "Desktop App (Windows)."))
+    port = request.scope.get("server", (None, 8000))[1] or 8000
+    try:
+        started = unity_service.open_app(f"http://127.0.0.1:{port}")
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"id": patient["id"], "started": started, "mode": "app"}
 
 
 @app.get("/api/vr/patients")
@@ -263,6 +315,17 @@ def vr_package_file(patient_id: str, file_name: str):
         raise HTTPException(status_code=404, detail="Not found.") from exc
     media = "application/octet-stream" if file_name.endswith(".bin") else "application/json"
     return FileResponse(path, media_type=media)
+
+
+@app.get("/api/vr/patients/{patient_id}/slices/{image}")
+def vr_package_slice(patient_id: str, image: str):
+    try:
+        path = vr_service.package_file(patient_id, f"slices/{image}")
+    except vr_service.PackageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Not found.") from exc
+    return FileResponse(path, media_type="image/png")
 
 
 @app.delete("/api/vr/patients/{patient_id}")

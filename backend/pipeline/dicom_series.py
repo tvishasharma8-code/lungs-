@@ -168,3 +168,72 @@ def safe_relative_path(name: str) -> Optional[str]:
         if part:
             parts.append(part)
     return os.path.join(*parts) if parts else None
+
+
+def has_even_spacing(series: DicomSeries, tolerance: float = 0.01) -> bool:
+    """Whether consecutive slices are the same distance apart (within `tolerance`, as a
+    fraction of the typical gap) - what dicom2nifti requires."""
+    if not series.has_geometry or len(series.slices) < 3:
+        return True
+    s0 = series.slices[0]
+    normal = np.cross(s0.row_dir, s0.col_dir)
+    gaps = np.abs(np.diff([float(np.dot(s.position, normal)) for s in series.slices]))
+    typical = float(np.median(gaps))
+    return typical > 0 and float(np.max(np.abs(gaps - typical))) <= tolerance * typical
+
+
+def write_uniform_nifti(series: DicomSeries, out_path: str) -> float:
+    """
+    Writes the series as a NIfTI volume (Hounsfield units, int16) on an EVEN slice grid,
+    interpolating linearly between neighbouring slices from their real positions.
+    Returns the slice step used (mm; the series' most common spacing).
+
+    For series dicom2nifti refuses ("slice increment not consistent" - a missing slice,
+    or sparser slices at one end; A0265 has 0.7 mm spacing with 5-21 mm gaps at the
+    bottom). Turning its check off instead would assume even spacing and misplace
+    every slice after the first gap. The affine maps voxels to the true patient
+    positions, so the mesh and tumor positions stay in the same mm frame.
+    """
+    import nibabel as nib
+
+    if not series.has_geometry or len(series.slices) < 2:
+        raise ValueError("Needs slice positions/orientation to resample.")
+    s0 = series.slices[0]
+    normal = np.cross(s0.row_dir, s0.col_dir)
+    # Distance of each slice from the first, towards the last (inferior).
+    t = np.array([float(np.dot(s.position - s0.position, normal)) for s in series.slices])
+    direction = -normal if t[-1] < 0 else normal
+    t = np.abs(t)
+    gaps = np.diff(t)
+    step = float(np.median(gaps[gaps > 1e-3]))
+    nz = int(round(t[-1] / step)) + 1
+
+    def hu(k: int) -> np.ndarray:
+        ds = dcmread(series.slices[k].path)
+        img = ds.pixel_array.astype(np.float32) * float(getattr(ds, "RescaleSlope", 1) or 1) \
+            + float(getattr(ds, "RescaleIntercept", 0) or 0)
+        return img.T  # NIfTI axes: i = column, j = row
+
+    vol = np.empty((s0.cols, s0.rows, nz), dtype=np.int16)
+    cache: dict[int, np.ndarray] = {}
+    for z in range(nz):
+        target = z * step
+        k = int(np.clip(np.searchsorted(t, target, side="right") - 1, 0, len(t) - 2))
+        w = float(np.clip((target - t[k]) / max(t[k + 1] - t[k], 1e-6), 0.0, 1.0))
+        for need in (k, k + 1):
+            if need not in cache:
+                cache[need] = hu(need)
+        for old in [c for c in cache if c < k]:
+            del cache[old]
+        vol[:, :, z] = np.round((1 - w) * cache[k] + w * cache[k + 1]).astype(np.int16)
+
+    # Stored bottom slice first, as dicom2nifti does (on patient 11 this volume and
+    # dicom2nifti's are voxel-identical, same affine).
+    lps = np.eye(4)
+    lps[:3, 0] = s0.row_dir * s0.col_spacing
+    lps[:3, 1] = s0.col_dir * s0.row_spacing
+    lps[:3, 2] = -direction * step
+    lps[:3, 3] = s0.position + direction * step * (nz - 1)
+    ras = np.diag([-1.0, -1.0, 1.0, 1.0]) @ lps
+    nib.save(nib.Nifti1Image(np.ascontiguousarray(vol[:, :, ::-1]), ras), out_path)
+    return step

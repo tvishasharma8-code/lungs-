@@ -34,6 +34,12 @@ def session_upload_dir(session_id: str) -> str:
     return os.path.join(UPLOAD_ROOT, session_id)
 
 
+def vr_output_dir(job_id: str) -> str:
+    """The job's VR outputs: mesh.bin + meta.json (reconstruction), findings.json +
+    slices/ (detection). "Send to VR" copies them into a Patient Package."""
+    return os.path.join(OUTPUT_ROOT, f"{job_id}_vr")
+
+
 def start_job(session_id: str, analysis_type: AnalysisType) -> Job:
     dicom_dir = session_upload_dir(session_id)
     if not os.path.isdir(dicom_dir) or not os.listdir(dicom_dir):
@@ -61,7 +67,7 @@ def _run_job(job: Job, dicom_dir: str) -> None:
             )
 
         if job.analysis_type.wants_abnormality:
-            tumor_service.run_abnormality_detection(job, dicom_dir)
+            tumor_service.run_abnormality_detection(job, dicom_dir, vr_output_dir(job.job_id))
 
         job.state = JobState.COMPLETED
     except PipelineError as exc:
@@ -93,4 +99,5 @@ def cleanup_session(session_id: str, job_id: str | None = None) -> None:
         out_stl_path = os.path.join(OUTPUT_ROOT, f"{job_id}.stl")
         if os.path.exists(out_stl_path):
             os.remove(out_stl_path)
+        shutil.rmtree(vr_output_dir(job_id), ignore_errors=True)
         job_store.delete(job_id)

@@ -11,6 +11,7 @@ Packages are stored in a temporary folder (LUNGVISION_VR_DIR), not in your home 
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -71,7 +72,19 @@ def main_test(src: str) -> int:
     meta = client.get(f"/api/vr/patients/{pid}/meta.json")
     check(meta.status_code == 200 and meta.json().get("frame") == "DICOM_LPS_mm", "meta.json served, LPS frame")
     fnd = client.get(f"/api/vr/patients/{pid}/findings.json")
-    check(fnd.status_code == 200 and fnd.json().get("tumors") == [], "findings.json present (empty until detection)")
+    # The source folder's own findings (detection ran) travel with the package; without
+    # them the package still has an empty findings.json.
+    src_findings = os.path.join(src, "findings.json")
+    expected = json.load(open(src_findings, encoding="utf-8"))["tumors"] if os.path.isfile(src_findings) else []
+    check(fnd.status_code == 200 and fnd.json().get("tumors") == expected,
+          f"findings.json carries the job's tumors ({len(expected)})")
+    if expected:
+        first = fnd.json()["slices"][0]["image"]
+        img = client.get(f"/api/vr/patients/{pid}/{first}")
+        check(img.status_code == 200 and img.headers["content-type"] == "image/png", f"flagged slice image served ({first})")
+        check(client.get(f"/api/vr/patients/{pid}/slices/..%2Fmeta.json").status_code in (400, 404),
+              "slice path tricks rejected")
+        check(client.get(f"/api/vr/patients/{pid}/slices/notapng.txt").status_code == 400, "only slice PNGs are served")
 
     print("Rejects bad requests:")
     check(client.get(f"/api/vr/patients/{pid}/package.json").status_code == 400, "only package files are served")
@@ -86,6 +99,16 @@ def main_test(src: str) -> int:
     check(client.delete(f"/api/vr/patients/{pid}").status_code == 200, "deleted")
     check(client.get("/api/vr/patients").json() == [], "list is empty")
     check(client.get("/api/vr/active").json()["id"] is None, "no active patient")
+
+    print("After a backend restart (job forgotten, its model still on disk):")
+    import uuid
+    lost = str(uuid.uuid4())
+    shutil.copytree(src, analysis_service.vr_output_dir(lost), dirs_exist_ok=True)
+    r = client.post(f"/api/vr/send/{lost}", params={"label": "After restart"})
+    check(r.status_code == 200 and r.json().get("label") == "After restart", f"send still works ({r.status_code})")
+    check(client.post("/api/vr/send/..%2F..%2Fetc").status_code == 404, "non-id job names rejected")
+    check(client.post(f"/api/vr/send/{uuid.uuid4()}").status_code == 404, "unknown job without a model: 404")
+    shutil.rmtree(analysis_service.vr_output_dir(lost), ignore_errors=True)
 
     print("ALL PASSED" if failures == 0 else f"{failures} FAILED")
     return 0 if failures == 0 else 1

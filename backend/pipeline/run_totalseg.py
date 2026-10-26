@@ -30,7 +30,7 @@ import trimesh
 import dicom2nifti
 
 from pipeline import ct_refine, lung_mesh
-from pipeline.dicom_series import load_series
+from pipeline.dicom_series import has_even_spacing, load_series, write_uniform_nifti
 
 # Structures we segment and fuse into the final lung + airway mesh.
 ROI_SUBSET = [
@@ -185,18 +185,30 @@ def run_pipeline(
         progress("dicom_to_nifti", "Converting DICOM series to NIfTI", 0)
 
         ct_nifti = os.path.join(nifti_dir, "ct.nii.gz")
-        dicom2nifti.convert_directory(
-            tmp_dicom_dir,
-            nifti_dir,
-            compression=True,
-            reorient=False,
-        )
+        if dicom_series.has_geometry and not has_even_spacing(dicom_series):
+            # dicom2nifti refuses these (and logs a traceback doing so): build the volume
+            # on an even grid from the true slice positions instead.
+            step = write_uniform_nifti(dicom_series, ct_nifti)
+            log(f"Slice spacing is uneven - resampled the CT to an even {step:.2f} mm grid")
+        else:
+            dicom2nifti.convert_directory(
+                tmp_dicom_dir,
+                nifti_dir,
+                compression=True,
+                reorient=False,
+            )
 
         converted = None
         for f in os.listdir(nifti_dir):
             if f.endswith(".nii.gz"):
                 converted = os.path.join(nifti_dir, f)
                 break
+        if converted is None and dicom_series.has_geometry:
+            # Safety net: dicom2nifti wrote nothing for a series that passed the spacing
+            # check above (it validates more than spacing) - same even-grid rebuild.
+            step = write_uniform_nifti(dicom_series, ct_nifti)
+            log(f"Slice spacing is uneven - resampled the CT to an even {step:.2f} mm grid")
+            converted = ct_nifti
         if converted is None:
             raise PipelineError("dicom2nifti did not produce a NIfTI file.")
         if converted != ct_nifti:
@@ -313,7 +325,10 @@ def run_pipeline(
             surface_mask = ct_refine.refine_lung_mask(ct_hu, labels, lung_mesh.voxel_spacing_mm(affine),
                                                       hu_threshold=LUNG_HU_THRESHOLD,
                                                       closing_mm=0.0, median_mm=0.0,
-                                                      fill_holes=FILL_VESSELS)
+                                                      fill_holes=FILL_VESSELS,
+                                                      affine=affine,
+                                                      trachea_label=(found_structures.index("trachea") + 1
+                                                                     if "trachea" in found_structures else None))
             del ct_hu
             progress("mesh", "Building the surface (3D Slicer method)", 40)
             surface = lung_mesh.slicer_surface(surface_mask, affine, smoothing_factor=SLICER_SMOOTHING)
@@ -352,6 +367,11 @@ def run_pipeline(
                 os.path.join(vr_dir, "meta.json"), vr_surface, structures,
                 series_uid=dicom_series.series_uid, slice_count=len(files),
                 voxel_spacing_mm=list(voxel_spacing), mesh_file="mesh.bin")
+            # The AI lobe masks, kept so tumor detection can say which lobe a tumor is
+            # in (tumor_cluster.locate) - a tumor is solid, so the air-based surface
+            # above can't. Not part of the Patient Package; compresses to a few MB.
+            np.savez_compressed(os.path.join(vr_dir, "labels.npz"), labels=labels.astype(np.uint8),
+                                affine=affine, names=np.array(found_structures))
             vr_triangles = int(len(vr_surface.faces))
             per_structure = ", ".join("%s=%d" % (s["name"], s["triangles"]) for s in structures)
             log(f"VR mesh saved: {vr_dir} ({vr_triangles} triangles: {per_structure})")
