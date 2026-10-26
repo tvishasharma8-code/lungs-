@@ -65,6 +65,17 @@ class PipelineResult:
 # coarser. LUNGVISION_VR_TRIANGLES overrides it (e.g. 400000 for a lighter mesh).
 VR_TARGET_TRIANGLES = int(os.environ.get("LUNGVISION_VR_TRIANGLES", "1460000"))
 
+# 3D Slicer's "Smoothing factor" for the model surface (Slicer's default is 0.5; lower =
+# more surface detail, higher = smoother). LUNGVISION_SLICER_SMOOTHING overrides it.
+SLICER_SMOOTHING = float(os.environ.get("LUNGVISION_SLICER_SMOOTHING", "0.5"))
+
+# Lung threshold (HU) and vessel filling for the CT-refined surface. -600 HU without
+# filling matched a hand-made 3D Slicer model best on patient 11 (fissure creases and
+# vessel impressions visible, not puffy); -400 looked inflated and hid the fissures,
+# -750 pitted the surface. A plain Slicer threshold doesn't fill vessels either.
+LUNG_HU_THRESHOLD = float(os.environ.get("LUNGVISION_LUNG_HU", "-600"))
+FILL_VESSELS = os.environ.get("LUNGVISION_FILL_VESSELS", "0") == "1"
+
 
 class PipelineError(RuntimeError):
     pass
@@ -289,29 +300,37 @@ def run_pipeline(
         progress("mesh", "Running marching cubes", 10)
 
         if refine_with_ct:
-            # The surface follows the CT at native resolution, like a 3D Slicer
-            # threshold model; TotalSegmentator only says where the lungs are and
-            # which lobe is which (see ct_refine.py). Light smoothing only - heavy
-            # smoothing erased fissures and rib impressions.
+            # Built the way a 3D Slicer model is: the CT's own lung outline at native
+            # resolution (TotalSegmentator only says where the lungs are and which
+            # lobe is which - see ct_refine.py), NOT pre-smoothed, then Slicer's
+            # surface method (lung_mesh.slicer_surface). Keeping the CT's fine detail
+            # is what makes it look real; every earlier attempt to smooth it (blur,
+            # median, Taubin) produced a clay-like model. Verified on patient 11
+            # against real 3D Slicer run on the same outline: identical triangle
+            # count, median 0.13 mm apart.
             progress("smooth", "Refining the lung surface from the CT", 30)
             ct_hu = np.asanyarray(nib.load(ct_nifti).dataobj).astype(np.float32)
-            surface_mask = ct_refine.refine_lung_mask(ct_hu, labels, lung_mesh.voxel_spacing_mm(affine))
+            surface_mask = ct_refine.refine_lung_mask(ct_hu, labels, lung_mesh.voxel_spacing_mm(affine),
+                                                      hu_threshold=LUNG_HU_THRESHOLD,
+                                                      closing_mm=0.0, median_mm=0.0,
+                                                      fill_holes=FILL_VESSELS)
             del ct_hu
-            sigma_mm, taubin_iterations = 0.6, 10
+            progress("mesh", "Building the surface (3D Slicer method)", 40)
+            surface = lung_mesh.slicer_surface(surface_mask, affine, smoothing_factor=SLICER_SMOOTHING)
+            taubin_iterations = 0
         else:
             # AI masks alone: --fast works at 3 mm, so it needs a stronger blur.
-            surface_mask = merged
-            sigma_mm, taubin_iterations = (3.0 if fast else 2.0), 30
-
-        surface = lung_mesh.extract_surface(surface_mask, affine, sigma_mm=sigma_mm)
+            surface = lung_mesh.extract_surface(merged, affine, sigma_mm=3.0 if fast else 2.0)
+            taubin_iterations = 30
 
         mesh = trimesh.Trimesh(surface.verts_lps, surface.faces, process=False)
         mesh.remove_unreferenced_vertices()
         mesh.merge_vertices()
         mesh.update_faces(mesh.nondegenerate_faces())
         mesh = lung_mesh.keep_main_bodies(mesh)
-        progress("mesh", "Smoothing surface", 40)
-        lung_mesh.smooth_mesh(mesh, iterations=taubin_iterations)
+        if taubin_iterations:
+            progress("mesh", "Smoothing surface", 40)
+            lung_mesh.smooth_mesh(mesh, iterations=taubin_iterations)
         mesh.fix_normals()
 
         progress("mesh", "Exporting STL", 70)
