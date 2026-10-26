@@ -48,11 +48,15 @@ def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndar
                      hu_threshold: float = -400.0, grow_mm: float = 4.0,
                      airway_search_mm: float = 30.0, trachea_label: int | None = None,
                      closing_mm: float = 2.0, median_mm: float = 3.0,
-                     fill_holes: bool = True) -> np.ndarray:
+                     fill_holes: bool = True, affine: np.ndarray | None = None,
+                     airway_column_mm: float = 30.0) -> np.ndarray:
     """
     ct_hu:      CT volume in Hounsfield units, same grid as ai_labels.
     ai_labels:  0 = background, 1..K = TotalSegmentator structures.
     voxel_mm:   voxel size per array axis (mm).
+    trachea_label + affine: when given, the airway is followed up through the
+                connected air all the way to the top of the scan (see _extend_airway) -
+                TotalSegmentator's trachea stops well below it.
     Returns a boolean lung + airway mask on the CT grid.
     """
     ai_full = ai_labels > 0
@@ -111,4 +115,46 @@ def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndar
 
     out = np.zeros(ai_full.shape, dtype=bool)
     out[box] = lung
+
+    if trachea_label is not None and affine is not None:
+        _extend_airway(out, ct_hu, ai_labels == trachea_label, voxel_mm, affine,
+                       hu_threshold, airway_column_mm)
     return out
+
+
+def _extend_airway(mask: np.ndarray, ct_hu: np.ndarray, trachea: np.ndarray, voxel_mm: np.ndarray,
+                   affine: np.ndarray, hu_threshold: float, column_mm: float) -> None:
+    """
+    Adds (in place) the airway above the lungs: the air connected to the trachea inside
+    a column around it, from the trachea's lower end to the top of the scan. A hand-made
+    3D Slicer model includes this (upper trachea, larynx); TotalSegmentator's trachea
+    stops well below, and the 30 mm search around the AI masks didn't reach it. The
+    column keeps the search away from air outside the body.
+    """
+    if not trachea.any():
+        return
+
+    # Which array axis runs head-to-foot, and which way is up (RAS/LPS z = superior).
+    axis = int(np.argmax(np.abs(affine[2, :3])))
+    superior_increasing = affine[2, axis] > 0
+
+    nz = np.nonzero(trachea)
+    region = []
+    for a in range(3):
+        lo, hi = int(nz[a].min()), int(nz[a].max()) + 1
+        if a == axis:
+            lo, hi = (lo, mask.shape[a]) if superior_increasing else (0, hi)
+        else:
+            m = int(np.ceil(column_mm / voxel_mm[a]))
+            lo, hi = max(0, lo - m), min(mask.shape[a], hi + m)
+        region.append(slice(lo, hi))
+    region = tuple(region)
+
+    air = ct_hu[region] < hu_threshold
+    comp, n = ndimage.label(air)
+    if not n:
+        return
+    seeds = np.unique(comp[mask[region] & air])
+    seeds = seeds[seeds > 0]
+    if len(seeds):
+        mask[region] |= np.isin(comp, seeds)

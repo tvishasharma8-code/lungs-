@@ -95,11 +95,29 @@ class AbnormalityFinding(BaseModel):
     note: str = ""
 
 
+class TumorFinding(BaseModel):
+    """One tumor: the per-slice detections that belong together (pipeline/tumor_cluster.py)."""
+    id: str
+    max_confidence: float
+    mean_confidence: float
+    slice_count: int
+    slice_range: list[int] = Field(description="First and last slice index, body order")
+    key_slice: int = Field(description="Slice where it is detected most confidently")
+    key_bbox: list[float] = Field(description="Normalized [x_min, y_min, x_max, y_max] on key_slice")
+    center_mm: Optional[list[float]] = Field(None, description="DICOM patient coords (LPS)")
+    size_mm: Optional[list[float]] = None
+    volume_mm3: Optional[float] = Field(None, description="Rough estimate from the boxes")
+    location: Optional[str] = Field(None, description="Lobe (TotalSegmentator name) or 'outside the lungs'; "
+                                                      "only when 3D reconstruction ran too")
+
+
 class AbnormalityResult(BaseModel):
     mock: bool = True
     total_slices: int
     findings: list[AbnormalityFinding]
     summary: str
+    tumors: list[TumorFinding] = []
+    scanned_slices: Optional[int] = None
 
 
 class ReconstructionResult(BaseModel):

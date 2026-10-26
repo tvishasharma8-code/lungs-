@@ -3,6 +3,7 @@ import type {
   JobStatusResponse,
   ResultsResponse,
   UploadResponse,
+  VRPatient,
 } from "../types";
 
 const BASE = "/api";
@@ -53,6 +54,54 @@ export function stlDownloadUrl(jobId: string): string {
 
 export function sliceImageUrl(jobId: string, sliceIndex: number): string {
   return `${BASE}/slice-image/${jobId}/${sliceIndex}`;
+}
+
+/**
+ * "Send to VR": keeps this job's 3D model on the backend (it survives New Analysis)
+ * and makes it the patient the VR app shows - the headset picks it up within seconds.
+ */
+export async function sendToVR(jobId: string, label?: string): Promise<VRPatient> {
+  const params = new URLSearchParams();
+  if (label?.trim()) params.set("label", label.trim());
+  const res = await fetch(`${BASE}/vr/send/${jobId}?${params.toString()}`, { method: "POST" });
+  return handleJson<VRPatient>(res);
+}
+
+export async function listVRPatients(): Promise<VRPatient[]> {
+  const res = await fetch(`${BASE}/vr/patients`);
+  return handleJson<VRPatient[]>(res);
+}
+
+/** Chooses which kept patient the VR app shows. */
+export async function setActiveVRPatient(patientId: string): Promise<void> {
+  const res = await fetch(`${BASE}/vr/active/${encodeURIComponent(patientId)}`, { method: "POST" });
+  await handleJson(res);
+}
+
+export async function deleteVRPatient(patientId: string): Promise<void> {
+  const res = await fetch(`${BASE}/vr/patients/${encodeURIComponent(patientId)}`, { method: "DELETE" });
+  await handleJson(res);
+}
+
+/** Whether the Unity desktop app is built / already open on this PC. */
+export async function getUnityStatus(): Promise<{ built: boolean; running: boolean; editor: boolean }> {
+  const res = await fetch(`${BASE}/unity/status`);
+  return handleJson(res);
+}
+
+/**
+ * "View in Unity": makes this job's model the active patient (sending it to VR first if
+ * needed) and opens the Unity app as a desktop window, with all its sliders - or, with no
+ * desktop build, shows it in the open Unity Editor (mode "editor").
+ */
+export async function viewInUnity(
+  jobId: string,
+  label?: string
+): Promise<{ id: string; started: boolean; mode: "app" | "editor" }> {
+  const params = new URLSearchParams();
+  if (label?.trim()) params.set("label", label.trim());
+  const res = await fetch(`${BASE}/unity/view/${jobId}?${params.toString()}`, { method: "POST" });
+  return handleJson(res);
 }
 
 export async function resetSession(sessionId: string, jobId?: string): Promise<void> {

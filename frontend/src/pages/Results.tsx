@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/Header";
 import STLViewer from "../components/STLViewer";
+import VRPanel from "../components/VRPanel";
 import { sliceImageUrl, stlDownloadUrl } from "../services/api"
 import { useSession } from "../services/SessionContext";
 
@@ -141,6 +142,8 @@ function ReconstructionPanel({
           <DownloadIcon />
           Download STL
         </a>
+
+        <VRPanel jobId={jobId} />
       </div>
     </div>
   );
@@ -170,8 +173,24 @@ function AbnormalityPanel({
       <div className="panel p-5">
         <p className="font-display text-sm font-medium text-slate-200">Summary</p>
         <p className="mt-2 text-sm text-slate-400">{result.summary}</p>
-        <p className="mt-1 text-xs text-slate-600">Scanned {result.total_slices} slices.</p>
+        <p className="mt-1 text-xs text-slate-600">
+          {result.scanned_slices
+            ? `Scanned ${result.scanned_slices} of ${result.total_slices} slices (about every 2.5 mm).`
+            : `Scanned ${result.total_slices} slices.`}
+        </p>
       </div>
+
+      {!!result.tumors?.length && (
+        <>
+          <p className="font-display text-sm font-medium text-slate-200">Tumors</p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {result.tumors.map((t) => (
+              <TumorCard key={t.id} tumor={t} jobId={jobId} />
+            ))}
+          </div>
+          <p className="font-display text-sm font-medium text-slate-200">All detections</p>
+        </>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {result.findings.map((f) => (
@@ -230,6 +249,62 @@ function FindingCard({
       </div>
     </div>
   );
+}
+
+function TumorCard({ tumor, jobId }: { tumor: import("../types").TumorFinding; jobId: string }) {
+  const [xmin, ymin, xmax, ymax] = tumor.key_bbox;
+  const outside = tumor.location === "outside the lungs";
+  return (
+    <div className="panel overflow-hidden">
+      <div className="relative aspect-square bg-black">
+        <img
+          src={sliceImageUrl(jobId, tumor.key_slice)}
+          alt={`CT slice ${tumor.key_slice}`}
+          className="absolute inset-0 h-full w-full object-contain"
+        />
+        <div
+          className="absolute border-2 border-red-500 shadow-[0_0_0_1px_rgba(0,0,0,0.5)]"
+          style={{
+            left: `${xmin * 100}%`,
+            top: `${ymin * 100}%`,
+            width: `${(xmax - xmin) * 100}%`,
+            height: `${(ymax - ymin) * 100}%`,
+          }}
+        />
+        <span className="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-mono text-red-400">
+          Tumor {tumor.id}
+        </span>
+      </div>
+      <div className="p-4">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium text-slate-200">Tumor {tumor.id}</p>
+          <span className="rounded-full bg-accent-500/15 px-2 py-0.5 text-[11px] text-accent-300">
+            {(tumor.max_confidence * 100).toFixed(0)}% confidence
+          </span>
+        </div>
+        {tumor.location && (
+          <p className={`mt-1 text-xs ${outside ? "text-amber-300" : "text-slate-400"}`}>
+            {outside ? "Outside the lung outline - may be a false alarm (e.g. hilum vessels)" : prettyLobe(tumor.location)}
+          </p>
+        )}
+        <dl className="mt-3 space-y-1.5 text-xs">
+          <Row label="Seen on" value={`${tumor.slice_count} slices (#${tumor.slice_range[0]}–${tumor.slice_range[1]})`} />
+          {tumor.size_mm && (
+            <Row label="Size (L-R × A-P × S-I)" value={tumor.size_mm.map((v) => v.toFixed(0)).join(" × ") + " mm"} />
+          )}
+          {tumor.volume_mm3 != null && <Row label="Approx. volume" value={`${(tumor.volume_mm3 / 1000).toFixed(1)} cm³`} />}
+          <Row label="Mean confidence" value={`${(tumor.mean_confidence * 100).toFixed(0)}%`} />
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+function prettyLobe(name: string): string {
+  // "lung_lower_lobe_left" -> "Left lower lobe"
+  const m = name.match(/^lung_(upper|middle|lower)_lobe_(left|right)$/);
+  if (m) return `${m[2][0].toUpperCase()}${m[2].slice(1)} ${m[1]} lobe`;
+  return name.replaceAll("_", " ");
 }
 
 function Row({ label, value }: { label: string; value: string }) {
