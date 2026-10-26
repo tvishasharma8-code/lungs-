@@ -60,3 +60,7 @@ Thumbs.db
 # generated C++ - Unity's own folder name says not to ship it.
 *_BackUpThisFolder_ButDontShipItWithYourGame/
 *_BurstDebugInformation_DoNotShip/
+
+# Patient CT data (DICOM) - never commit scans to the repo
+/patient*/
+*.dcm
