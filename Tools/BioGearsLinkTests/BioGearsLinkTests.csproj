@@ -9,6 +9,6 @@
     <LangVersion>9.0</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\..\Assets\BioGearsLink\*.cs" />
+    <Compile Include="..\..\Assets\LungVR\Scripts\Physiology\Link\BioGearsLink*.cs" />
   </ItemGroup>
 </Project>
