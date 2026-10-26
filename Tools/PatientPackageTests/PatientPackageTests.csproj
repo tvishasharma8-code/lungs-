@@ -9,6 +9,6 @@
     <LangVersion>9.0</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\..\Assets\PatientLink\LungPackageMesh.cs" />
+    <Compile Include="..\..\Assets\LungVR\Scripts\Patient\LungPackageMesh.cs" />
   </ItemGroup>
 </Project>

@@ -21,6 +21,46 @@ static class Program
         return new[] { (float)(x / n), (float)(y / n), (float)(z / n) };
     }
 
+    // Tumor markers (TumorMarkers.cs) convert findings.json centres with the same
+    // LpsToUnity as the mesh: each must land inside the lung's bounds, and a tumor the
+    // backend placed in a lobe must be close to that lobe's surface in Unity space. (Not
+    // necessarily NEAREST to it: the mesh is the lungs' air, a tumor is solid and so a
+    // hole in it, and the closest air can be across a fissure - A0265's T1 is inside the
+    // left lower lobe mask, yet upper- and lower-lobe air are both about 9 mm away.)
+    static void CheckTumors(string dir, LungPackageMesh mesh, float[] min, float[] max)
+    {
+        string path = Path.Combine(dir, "findings.json");
+        if (!File.Exists(path)) return;
+        var tumors = JsonDocument.Parse(File.ReadAllText(path)).RootElement.GetProperty("tumors");
+        if (tumors.GetArrayLength() == 0) return;
+
+        Console.WriteLine("Tumors (findings.json, same LPS -> Unity mapping):");
+        foreach (var t in tumors.EnumerateArray())
+        {
+            string id = t.GetProperty("id").GetString();
+            var c = t.GetProperty("center_mm").EnumerateArray().Select(e => e.GetSingle()).ToArray();
+            LungPackageMesh.LpsToUnity(c[0], c[1], c[2], out float x, out float y, out float z);
+            bool inside = x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1] && z >= min[2] && z <= max[2];
+            Check(inside, $"{id} inside the lung's bounds (Unity {x:F0},{y:F0},{z:F0} mm)");
+
+            string location = t.TryGetProperty("location", out var loc) && loc.ValueKind == JsonValueKind.String ? loc.GetString() : null;
+            if (location == null || !location.StartsWith("lung_")) continue;
+            var lobe = mesh.SubMeshes.FirstOrDefault(s => s.Name == location);
+            double best = double.MaxValue;
+            if (lobe != null)
+                foreach (int i in lobe.Indices)
+                {
+                    double dx = mesh.Positions[i * 3] - x, dy = mesh.Positions[i * 3 + 1] - y, dz = mesh.Positions[i * 3 + 2] - z;
+                    best = Math.Min(best, dx * dx + dy * dy + dz * dz);
+                }
+            // Within the tumor's own radius plus a margin: a wrongly mapped centre lands
+            // many centimetres away (another lobe, the other lung or outside the body).
+            double radius = t.TryGetProperty("size_mm", out var size) && size.ValueKind == JsonValueKind.Array
+                ? size.EnumerateArray().Max(e => e.GetDouble()) / 2 : 15;
+            Check(Math.Sqrt(best) <= radius + 10, $"{id} at its lobe ({location}): surface {Math.Sqrt(best):F0} mm away, tumor radius ~{radius:F0} mm");
+        }
+    }
+
     static int Main(string[] args)
     {
         if (args.Length == 0) { Console.WriteLine("usage: dotnet run -- <folder with mesh.bin + meta.json>"); return 2; }
@@ -57,6 +97,8 @@ static class Program
         Check(tr[1] > ru[1] && tr[1] > lu[1], "trachea highest");
         Check(Math.Abs(tr[0]) < Math.Abs(ru[0]) && Math.Abs(tr[0]) < Math.Abs(lu[0]), "trachea near the midline");
         Check(rm[2] < rl[2], "right middle lobe in front of the right lower lobe (-Z = front, toward the viewer)");
+
+        CheckTumors(dir, mesh, min, max);
 
         Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
         return failures == 0 ? 0 : 1;
