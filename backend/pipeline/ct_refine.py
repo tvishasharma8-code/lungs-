@@ -47,7 +47,8 @@ def slicer_smooth(mask: np.ndarray, voxel_mm: np.ndarray, closing_mm: float = 2.
 def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndarray,
                      hu_threshold: float = -400.0, grow_mm: float = 4.0,
                      airway_search_mm: float = 30.0, trachea_label: int | None = None,
-                     closing_mm: float = 2.0, median_mm: float = 3.0) -> np.ndarray:
+                     closing_mm: float = 2.0, median_mm: float = 3.0,
+                     fill_holes: bool = True) -> np.ndarray:
     """
     ct_hu:      CT volume in Hounsfield units, same grid as ai_labels.
     ai_labels:  0 = background, 1..K = TotalSegmentator structures.
@@ -97,11 +98,16 @@ def refine_lung_mask(ct_hu: np.ndarray, ai_labels: np.ndarray, voxel_mm: np.ndar
 
     # 4. Vessels and small airways inside the lung are denser than air; fill them per
     # axial slice (like a Slicer "fill holes") so the model is solid lung, not a sponge.
-    axial = int(np.argmax(voxel_mm))  # slice axis = the largest spacing on typical CT
-    lung = np.moveaxis(lung, axial, 0)
-    for i in range(lung.shape[0]):
-        lung[i] = ndimage.binary_fill_holes(lung[i])
-    lung = np.moveaxis(lung, 0, axial)
+    # Off: only cavities fully enclosed in 3D are filled, so vessels and airways that
+    # reach the surface stay as the small channels and dents a Slicer threshold shows.
+    if fill_holes:
+        axial = int(np.argmax(voxel_mm))  # slice axis = the largest spacing on typical CT
+        lung = np.moveaxis(lung, axial, 0)
+        for i in range(lung.shape[0]):
+            lung[i] = ndimage.binary_fill_holes(lung[i])
+        lung = np.moveaxis(lung, 0, axial)
+    else:
+        lung = ndimage.binary_fill_holes(lung)
 
     out = np.zeros(ai_full.shape, dtype=bool)
     out[box] = lung

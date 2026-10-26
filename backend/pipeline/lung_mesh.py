@@ -82,6 +82,63 @@ def extract_surface(mask: np.ndarray, affine: np.ndarray, sigma_mm: float = 2.0)
     return Surface(verts, faces)
 
 
+def slicer_surface(mask: np.ndarray, affine: np.ndarray, smoothing_factor: float = 0.5) -> Surface:
+    """
+    The surface 3D Slicer builds from a segmentation ("Show 3D" / export), using the
+    same VTK filters and settings as Slicer's labelmap-to-closed-surface conversion:
+    discrete flying edges on the binary mask, then windowed-sinc smoothing with
+    20 iterations and pass band 10^(-4 * smoothing_factor) (Slicer default factor 0.5),
+    boundary / feature-edge smoothing off, non-manifold smoothing on, normalised
+    coordinates. No blur of the mask first: that is what keeps the CT's fine surface
+    detail (vessel and rib impressions) which makes a Slicer model look real, while the
+    windowed-sinc filter removes the voxel staircase.
+
+    Runs in physical space (voxel spacing) like Slicer, then maps to LPS mm.
+    """
+    import vtk
+    from vtk.util import numpy_support
+
+    spacing = voxel_spacing_mm(affine)
+    padded = np.pad(mask.astype(np.uint8), 1)  # closed surface at the volume edges
+
+    image = vtk.vtkImageData()
+    image.SetDimensions(*padded.shape)  # x = array axis 0 (fastest in Fortran order)
+    image.SetSpacing(*[float(s) for s in spacing])
+    image.SetOrigin(*[-float(s) for s in spacing])  # undo the 1-voxel pad
+    scalars = numpy_support.numpy_to_vtk(padded.ravel(order="F"), deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+    image.GetPointData().SetScalars(scalars)
+
+    edges = vtk.vtkDiscreteFlyingEdges3D()
+    edges.SetInputData(image)
+    edges.SetValue(0, 1)
+    edges.ComputeGradientsOff()
+    edges.ComputeNormalsOff()
+    edges.ComputeScalarsOff()
+
+    smoother = vtk.vtkWindowedSincPolyDataFilter()
+    smoother.SetInputConnection(edges.GetOutputPort())
+    smoother.SetNumberOfIterations(20)
+    smoother.SetPassBand(10.0 ** (-4.0 * smoothing_factor))
+    smoother.BoundarySmoothingOff()
+    smoother.FeatureEdgeSmoothingOff()
+    smoother.NonManifoldSmoothingOn()
+    smoother.NormalizeCoordinatesOn()
+
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputConnection(smoother.GetOutputPort())
+    tri.Update()
+    poly = tri.GetOutput()
+
+    pts = numpy_support.vtk_to_numpy(poly.GetPoints().GetData()).astype(np.float64)
+    cells = numpy_support.vtk_to_numpy(poly.GetPolys().GetConnectivityArray()).astype(np.int64)
+    faces = cells.reshape(-1, 3)
+
+    verts = index_to_lps(pts / spacing, affine)  # physical (axis-aligned) -> index -> LPS
+    if signed_volume(verts, faces) < 0:
+        faces = faces[:, ::-1].copy()
+    return Surface(verts, faces)
+
+
 def smooth_mesh(mesh, iterations: int = 30):
     """
     Taubin smoothing in place on a trimesh.Trimesh (connected, merged vertices).
