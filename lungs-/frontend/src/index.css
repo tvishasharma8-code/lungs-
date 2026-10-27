@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-base-950 text-slate-200 font-sans antialiased;
+    background-image: radial-gradient(circle at 20% 0%, rgba(139, 92, 246, 0.10), transparent 45%),
+      radial-gradient(circle at 85% 15%, rgba(94, 234, 212, 0.06), transparent 40%);
+    background-attachment: fixed;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+  }
+  ::selection {
+    @apply bg-accent-500/30;
+  }
+  :focus-visible {
+    outline: 2px solid theme("colors.accent.400");
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-base-800/70 border border-white/5 rounded-2xl shadow-card backdrop-blur-sm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-accent-600 px-4 py-2.5
+      text-sm font-medium text-white transition-colors hover:bg-accent-500
+      disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5
+      text-sm font-medium text-slate-200 transition-colors hover:bg-white/10
+      disabled:cursor-not-allowed disabled:opacity-40;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

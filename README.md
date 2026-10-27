@@ -15,7 +15,7 @@ Education / research prototype – **not a medical device and not a diagnosis.**
  CT scan (DICOM folder)
         │  upload
         ▼
- LungVision website + backend  (lungs-/, its own repo)           BioGears C++ engine
+ LungVision website + backend  (lungs-/)                         BioGears C++ engine
    TotalSegmentator → 3D lungs (patient mm)                       (native plugin, Windows)
    Faster R-CNN → tumors (mm, lobe)                                        │
         │  "Send to VR" / "View in Unity" → Patient Package                │
@@ -29,7 +29,7 @@ Education / research prototype – **not a medical device and not a diagnosis.**
 ## Folder layout
 
 ```
-lung project/                     Unity 6000.3.5f1 project (this repo)
+lung project/                     this repo: the Unity 6000.3.5f1 project + LungVision + ML prototype
   Assets/
     LungVR/                       ← all of this project's own Unity code and assets
       Scripts/
@@ -50,7 +50,7 @@ lung project/                     Unity 6000.3.5f1 project (this repo)
     Samples/ XRI/ XR/ Oculus/ TextMesh Pro/ CompositionLayers/   packages' own folders
   Docs/                           ROADMAP.md, INTEGRATION_PLAN.md, capstone report
   Tools/                          C# tests that run outside Unity (see Tests)
-  lungs-/                         LungVision website + backend – separate repo, own README
+  lungs-/                         LungVision website + backend (setup: lungs-/README.md)
   ML_Unity_Integration/           ML team's original tumor prototype (superseded by the backend)
   Builds/                         build outputs (ignored)
 ```
