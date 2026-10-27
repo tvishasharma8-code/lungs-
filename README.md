@@ -106,6 +106,7 @@ Package folders live in `%USERPROFILE%\LungVision\vr_patients\<id>`.
 
 ## Docs
 
+- `Docs/SYSTEM_MAP.md` – every part, what goes to Unity, every connection and how it was checked.
 - `Docs/ROADMAP.md` – the phase plan from the capstone report and its status.
 - `Docs/INTEGRATION_PLAN.md` – how LungVision, the tumor model and the VR app fit
   together, decisions taken, progress.
