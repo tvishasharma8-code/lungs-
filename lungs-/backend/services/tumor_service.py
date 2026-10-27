@@ -30,7 +30,13 @@ from services.progress_service import Job
 PIPELINE_KEY = "abnormality"
 
 CONFIDENCE_THRESHOLD = 0.5
-SLICE_STEP_MM = 0.0         # 0 = scan EVERY slice (set e.g. 2.5 to scan one slice per 2.5 mm, faster)
+# One slice per 2.5 mm of body: a tumor worth reporting still lands on 2+ scanned slices
+# (what tumor_cluster needs), and on A0265 it found the same tumors as every 0.7 mm slice
+# with centres within 0.5 mm - at a fraction of the time (Faster R-CNN is ~2.5 s per slice
+# on CPU, so every slice of a thin-slice CT took up to an hour). Fixed rather than
+# "every slice on a GPU", so the same scan gives the same findings on any machine.
+# LUNGVISION_SLICE_STEP_MM=0 scans every slice.
+SLICE_STEP_MM = float(os.environ.get("LUNGVISION_SLICE_STEP_MM", "2.5"))
 MAX_SLICES = 0              # 0 = no cap
 MAX_FINDINGS_RETURNED = 25  # keep the per-slice list readable in the UI
 

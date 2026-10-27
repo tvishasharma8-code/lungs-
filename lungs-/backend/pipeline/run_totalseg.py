@@ -30,7 +30,7 @@ import trimesh
 import dicom2nifti
 
 from pipeline import ct_refine, lung_mesh
-from pipeline.dicom_series import has_even_spacing, load_series, write_uniform_nifti
+from pipeline.dicom_series import cached_series, has_even_spacing, write_uniform_nifti
 
 # Structures we segment and fuse into the final lung + airway mesh.
 ROI_SUBSET = [
@@ -157,7 +157,7 @@ def run_pipeline(
 
         # Shared loader: the same series and slice order tumor detection uses.
         try:
-            dicom_series = load_series(dicom_dir)
+            dicom_series = cached_series(dicom_dir)
         except FileNotFoundError as exc:
             raise PipelineError(
                 "No valid DICOM series found in the uploaded folder."
@@ -305,11 +305,12 @@ def run_pipeline(
         # Same smoothing (sigma 1.2) and iso-level as before, but the surface is
         # now taken through the full NIfTI affine into DICOM patient coordinates
         # (LPS, mm) instead of an origin-less spacing-only box - see lung_mesh.py.
-        log("STEP 5.5: Smoothing volume")
-        progress("smooth", "Smoothing volume", 0)
-        log("STEP 6: Creating STL mesh (patient coordinates, LPS mm)")
-        progress("smooth", "Volume smoothed", 100)
-        progress("mesh", "Running marching cubes", 10)
+        # Each step is reported when it really starts and ends: "smooth" is the surface
+        # preparation (CT refinement, or the mask blur inside extract_surface), "mesh"
+        # the surface itself. They used to report 100% before any work and then reopen
+        # "smooth" while "mesh" was running.
+        log("STEP 5.5: Preparing the lung surface")
+        progress("smooth", "Refining the lung surface from the CT" if refine_with_ct else "Smoothing volume", 0)
 
         if refine_with_ct:
             # Built the way a 3D Slicer model is: the CT's own lung outline at native
@@ -320,7 +321,6 @@ def run_pipeline(
             # median, Taubin) produced a clay-like model. Verified on patient 11
             # against real 3D Slicer run on the same outline: identical triangle
             # count, median 0.13 mm apart.
-            progress("smooth", "Refining the lung surface from the CT", 30)
             ct_hu = np.asanyarray(nib.load(ct_nifti).dataobj).astype(np.float32)
             surface_mask = ct_refine.refine_lung_mask(ct_hu, labels, lung_mesh.voxel_spacing_mm(affine),
                                                       hu_threshold=LUNG_HU_THRESHOLD,
@@ -330,10 +330,15 @@ def run_pipeline(
                                                       trachea_label=(found_structures.index("trachea") + 1
                                                                      if "trachea" in found_structures else None))
             del ct_hu
-            progress("mesh", "Building the surface (3D Slicer method)", 40)
+            progress("smooth", "Lung surface refined", 100)
+            log("STEP 6: Creating STL mesh (patient coordinates, LPS mm)")
+            progress("mesh", "Building the surface (3D Slicer method)", 10)
             surface = lung_mesh.slicer_surface(surface_mask, affine, smoothing_factor=SLICER_SMOOTHING)
             taubin_iterations = 0
         else:
+            progress("smooth", "Volume smoothing runs with the surface", 100)
+            log("STEP 6: Creating STL mesh (patient coordinates, LPS mm)")
+            progress("mesh", "Running marching cubes", 10)
             # AI masks alone: --fast works at 3 mm, so it needs a stronger blur.
             surface = lung_mesh.extract_surface(merged, affine, sigma_mm=3.0 if fast else 2.0)
             taubin_iterations = 30

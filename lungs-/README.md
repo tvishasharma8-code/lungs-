@@ -74,8 +74,10 @@ cd backend; .venv\Scripts\python -m uvicorn main:app --host 0.0.0.0 --port 8000
 cd frontend; npm run dev        # http://localhost:5173
 ```
 
-Use: **Upload** a CT folder → pick *3D Reconstruction*, *AI Abnormality Detection* or
-both → on the results page **Send to VR** (the headset switches to this patient within
+Use: **Upload** a CT folder (browse or drag & drop – sub-folders are kept) → pick
+*3D Lung Reconstruction* or *Tumor Detection + 3D Lung* (detection always builds the lung
+too; if one part fails the other is still shown, with a warning) → on the results page
+**Send to VR** (the headset switches to this patient within
 seconds) or **View in Unity** (opens the Unity app as a desktop window; build it first
 in Unity with *BioGears > Build Desktop App (Windows)*). The **Patients in VR** list
 switches between or removes kept patients.
@@ -93,6 +95,7 @@ folder and are deleted by *New Analysis*.
 | `LUNGVISION_FILL_VESSELS` | `0` | `1` fills vessels inside the lung (smoother, less detail) |
 | `LUNGVISION_SLICER_SMOOTHING` | `0.5` | 3D Slicer's smoothing factor |
 | `LUNGVISION_VR_TRIANGLES` | `1460000` | triangle budget of the VR mesh |
+| `LUNGVISION_SLICE_STEP_MM` | `2.5` | tumor detection scans one slice per this many mm; `0` = every slice (slow on CPU) |
 
 ## Patient Package (the contract with the VR app)
 

@@ -48,6 +48,15 @@ export default function Results() {
           </button>
         </div>
 
+        {!!results.warnings?.length && (
+          <div className="mb-6 rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-xs text-amber-300">
+            <p className="font-medium">Part of the analysis failed - showing what completed.</p>
+            {results.warnings.map((w) => (
+              <p key={w} className="mt-1 text-amber-300/80">{w}</p>
+            ))}
+          </div>
+        )}
+
         {hasBoth && (
           <div className="mb-6 inline-flex rounded-lg border border-white/10 bg-white/[0.02] p-1">
             <TabButton active={tab === "reconstruction"} onClick={() => setTab("reconstruction")}>

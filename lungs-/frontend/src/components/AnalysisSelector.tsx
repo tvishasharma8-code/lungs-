@@ -1,23 +1,20 @@
 import type { AnalysisType } from "../types";
 
+// Tumor detection always builds the 3D lung too (to show each tumor on it and name its
+// lobe), so a separate "both" option would do exactly the same - the backend still
+// accepts "both" for older clients.
 const OPTIONS: { id: AnalysisType; title: string; desc: string; icon: JSX.Element }[] = [
   {
     id: "reconstruction",
     title: "3D Lung Reconstruction",
-    desc: "Generate a real 3D STL model from the CT scan using the segmentation pipeline.",
+    desc: "Build the patient's 3D lungs (lobes + airway) from the CT - view, download as STL, send to VR.",
     icon: <LungIcon />,
   },
   {
     id: "abnormality",
-    title: "ML Tumor Detection",
-    desc: "Find possible tumors on the CT slices with the team's Faster R-CNN model and show them on the 3D lung.",
+    title: "Tumor Detection + 3D Lung",
+    desc: "Everything in the reconstruction, plus the team's Faster R-CNN model finds possible tumors and places them on the 3D lung.",
     icon: <ScanIcon />,
-  },
-  {
-    id: "both",
-    title: "Both Analyses",
-    desc: "Run 3D reconstruction and abnormality detection together.",
-    icon: <StackIcon />,
   },
 ];
 
@@ -29,7 +26,7 @@ export default function AnalysisSelector({
   onChange: (v: AnalysisType) => void;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {OPTIONS.map((opt) => {
         const selected = value === opt.id;
         return (
@@ -98,19 +95,6 @@ function ScanIcon() {
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-function StackIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M12 3l8 4-8 4-8-4 8-4zM4 13l8 4 8-4M4 17l8 4 8-4"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
       />
     </svg>
   );

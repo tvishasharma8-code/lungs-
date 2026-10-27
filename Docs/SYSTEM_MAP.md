@@ -39,7 +39,7 @@ B1 DICOM loader ── one series, slices top→bottom, LPS mm geometry ──�
    │        │               mesh.bin + meta.json (LPS mm, lobes)  │
    │        └──────────────► labels.npz (lobe masks, stays on B) ─┤
    │                                                             ▼
-   └─► B3 detection ──► boxes (px + LPS mm) ──► B4 grouping ──► tumors + findings.json + slices/NNN.png
+   └─► B3 detection (1 slice / 2.5 mm) ──► boxes (px + LPS mm) ──► B4 grouping ──► tumors + findings.json + slices/NNN.png
                                                       │               │
                                A: tumor cards, 3D markers ◄───────────┤
                                                                       │
@@ -52,6 +52,11 @@ C1 Unity loader: meta.json + mesh.bin ──► patient lungs (LPS → Unity axe
           ▼
 C3 BioGears (D + E) ──► breathing, vitals, disease shading      (Quest standalone: via C4 from the PC)
 ```
+
+B2 and B3 run one after the other (B3 reads B2's lobe masks) but fail independently:
+if one fails the job still completes with the other's results, lists the failure in
+`results.warnings` and marks the failed step. Only when both fail is the job failed.
+One DICOM header pass per upload (`dicom_series.cached_series`), shared by all of them.
 
 ## 3. What goes to Unity – and what doesn't
 

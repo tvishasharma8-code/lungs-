@@ -11,6 +11,13 @@ interface Props {
 async function readEntry(entry: any, out: File[]): Promise<void> {
   if (entry.isFile) {
     const file: File = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    // Files from a dropped folder have an empty webkitRelativePath (only the folder
+    // picker sets it), so uploads fell back to the bare name and same-named slices from
+    // different series folders overwrote each other on the backend. Give them their
+    // path inside the dropped folder, exactly what the picker would have.
+    Object.defineProperty(file, "webkitRelativePath", {
+      value: String(entry.fullPath || file.name).replace(/^\/+/, ""),
+    });
     out.push(file);
   } else if (entry.isDirectory) {
     // Chrome's readEntries() returns at most 100 entries per call, so keep

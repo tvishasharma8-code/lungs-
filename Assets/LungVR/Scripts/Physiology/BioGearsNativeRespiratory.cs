@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -276,8 +277,18 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
     volatile float spo2Override;
     volatile bool spo2Dirty;
 
+    // Exercise is a live action too: a bucket load wiped it while the slider still showed
+    // it, so it is reapplied after loads like asthma (when not at rest).
     volatile bool pendingExercise;
     volatile float pendingExerciseSeverity;
+    volatile bool hasExercise;
+
+    // Set by the engine thread when the native engine can't start (create or first state
+    // load failed); Update() then switches to the simulated model on the main thread.
+    volatile bool nativeFailed;
+    // Every condition the UI set, latest value (main thread only), so a switch to the
+    // simulated model mid-start can hand it the patient as it was set up.
+    readonly Dictionary<string, float> lastConditions = new Dictionary<string, float>();
 
     // ARDS is a live action like asthma: persistent state, reapplied after bucket loads.
     volatile bool hasArdsSeverity;
@@ -444,6 +455,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         usingNativeEngine = true;
         statusMessage = "Starting BioGears engine thread...";
         wantStop = false;
+        nativeFailed = false;
         engineLogPath = Path.Combine(Application.persistentDataPath, "biogears_unity.log");
         engineThread = new Thread(EngineThreadMain) { IsBackground = true, Name = "BioGearsEngine" };
         engineThread.Start();
@@ -458,6 +470,21 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
             fallback = gameObject.AddComponent<SimulatedBioGearsRespiratory>();
         fallback.enabled = true;
         fallback.Initialize();
+    }
+
+    // The DLL loaded but the engine didn't start: without this the lungs froze and every
+    // vital read 0, since only a missing DLL / states folder fell back. The simulated
+    // model only heard the settings made while it was active, so it gets them all now.
+    void FallBackFromNative()
+    {
+        ActivateFallback("Native BioGears could not start (" + statusMessage + "). Using the simulated model.");
+        if (pacingRequested)
+        {
+            fallback.SetBaseRespirationRate(pacedRate);
+            fallback.SetBaseTidalVolume(pacedTidalVolume);
+        }
+        foreach (KeyValuePair<string, float> c in lastConditions)
+            fallback.ApplyCondition(c.Key, c.Value);
     }
 
     // ---- remote engine (Quest -> PC) ----
@@ -585,6 +612,9 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
 
     void Update()
     {
+        if (nativeFailed && usingNativeEngine)
+            FallBackFromNative();
+
         if (remote != null)
             PollRemote();
 
@@ -640,6 +670,8 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         // Remembered in both modes so the lung visuals can follow them.
         if (name == "pneumonia") PneumoniaSeverity = severity;
         if (name == "ards" || name == "respiratory_distress") ArdsSeverity = severity;
+        // Under the simulated model's names ("smoking" is COPD there).
+        lastConditions[name == "smoking" ? "copd" : name == "respiratory_distress" ? "ards" : name] = severity;
 
         // Headset: the PC's engine gets it too; the local simulated model below keeps
         // the same state so a dropped link changes nothing the user set.
@@ -673,6 +705,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
                 break;
             case "exercise":
                 pendingExerciseSeverity = severity;
+                hasExercise = true;
                 pendingExercise = true;
                 break;
             default:
@@ -835,6 +868,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         {
             statusMessage = "BG_CreateEngine failed: " + LastNativeError();
             Debug.LogError("[BioGearsNativeRespiratory] " + statusMessage);
+            nativeFailed = true;
             return;
         }
 
@@ -843,6 +877,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
             statusMessage = "Initial LoadState failed, engine thread exiting: " + LastNativeError();
             Debug.LogError("[BioGearsNativeRespiratory] " + statusMessage);
             BG_DestroyEngine();
+            nativeFailed = true;
             return;
         }
         engineRunning = true;
@@ -953,6 +988,7 @@ public class BioGearsNativeRespiratory : MonoBehaviour, IBioGearsRespiratorySyst
         if (hasAsthmaSeverity) asthmaDirty = true;
         if (hasSpO2Override) spo2Dirty = true;
         if (hasArdsSeverity) ardsDirty = true;
+        if (hasExercise && pendingExerciseSeverity > 0f) pendingExercise = true; // a fresh state is at rest
     }
 
     bool LoadBucket(int index)

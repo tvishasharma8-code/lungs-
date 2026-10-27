@@ -70,6 +70,9 @@ public class PatientLungLoader : MonoBehaviour
     string failedPatientId;
     float retryFailedAt;
     float nextPoll;
+    // The patient the user put away with ShowDefaultLung: not reloaded while it stays the
+    // active one, but polling goes on, so the next patient sent still appears.
+    string dismissedPatientId;
 
     [Serializable]
     public class PatientMeta
@@ -144,6 +147,7 @@ public class PatientLungLoader : MonoBehaviour
             }
             var reply = JsonUtility.FromJson<ActiveReply>(req.downloadHandler.text);
             if (reply != null && !string.IsNullOrEmpty(reply.id) && reply.id != loadedPatientId
+                && reply.id != dismissedPatientId
                 && (reply.id != failedPatientId || Time.unscaledTime >= retryFailedAt) && !loading)
                 yield return LoadPatient(reply.id);
         }
@@ -152,6 +156,7 @@ public class PatientLungLoader : MonoBehaviour
     /// <summary>Downloads a patient's package from the backend and puts their lung in the scene.</summary>
     public void Load(string patientId)
     {
+        dismissedPatientId = null;
         if (!loading)
             StartCoroutine(LoadPatient(patientId));
     }
@@ -320,11 +325,13 @@ public class PatientLungLoader : MonoBehaviour
         if (airflow != null)
             airflow.Rebuild();
 
+        // Don't bring this patient straight back on the next poll; a different one sent
+        // from the website still loads. (Turning followActivePatient off here stopped
+        // polling for good - nothing turned it back on.)
+        dismissedPatientId = loadedPatientId;
         loadedPatientId = "";
         loadedLabel = "Default lung model";
         Meta = null;
-        // Stop following until the user asks for a patient again, or the next one is sent.
-        followActivePatient = false;
         status = "Showing the default lung model";
         OnPatientLoaded?.Invoke(null);
     }

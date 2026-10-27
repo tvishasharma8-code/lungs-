@@ -49,7 +49,7 @@ class Job:
                     StepProgress(id="dicom_to_nifti", label="Converting to NIfTI"),
                     StepProgress(id="segmentation", label="Segmenting lungs & airways"),
                     StepProgress(id="merge", label="Merging structures"),
-                    StepProgress(id="smooth", label="Smoothing volume"),
+                    StepProgress(id="smooth", label="Refining lung surface"),
                     StepProgress(id="mesh", label="Generating 3D mesh (STL)"),
                 ],
             )
@@ -85,6 +85,18 @@ class Job:
                         step.percent = percent
                     return
 
+    def fail_pipeline(self, pipeline_key: str, detail: str) -> None:
+        """Marks the step a pipeline stopped at as failed (the first one not completed)."""
+        with _lock:
+            pipeline = self.pipelines.get(pipeline_key)
+            if not pipeline:
+                return
+            for step in pipeline.steps:
+                if step.status != StepStatus.COMPLETED:
+                    step.status = StepStatus.FAILED
+                    step.detail = detail
+                    return
+
     def to_status_response(self) -> JobStatusResponse:
         with _lock:
             return JobStatusResponse(
@@ -113,6 +125,10 @@ class JobStore:
     def get(self, job_id: str) -> Optional[Job]:
         with _lock:
             return self._jobs.get(job_id)
+
+    def for_session(self, session_id: str) -> list[Job]:
+        with _lock:
+            return [j for j in self._jobs.values() if j.session_id == session_id]
 
     def delete(self, job_id: str) -> None:
         with _lock:

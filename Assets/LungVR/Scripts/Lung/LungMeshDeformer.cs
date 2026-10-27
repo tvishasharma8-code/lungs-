@@ -296,6 +296,10 @@ public class LungMeshDeformer : MonoBehaviour
         displacedVertices = new Vector3[originalVertices.Length];
         directions = new Vector3[originalVertices.Length];
 
+        // From the vertices, not the stored bounds: a mesh initialised before (the default
+        // lung put back after a patient) still carries the breathing allowance added
+        // below, which would otherwise grow on every swap.
+        mesh.RecalculateBounds();
         Vector3 center = mesh.bounds.center;
         breathCentre = center;
 

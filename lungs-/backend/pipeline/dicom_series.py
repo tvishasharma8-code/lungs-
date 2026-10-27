@@ -22,6 +22,7 @@ Folders are searched recursively, because uploads now keep their sub-folder stru
 from __future__ import annotations
 
 import os
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
@@ -148,6 +149,33 @@ def load_series(folder: str) -> DicomSeries:
         series_count=len(by_series),
         has_geometry=has_geometry,
     )
+
+
+_series_cache: dict[tuple, DicomSeries] = {}
+_series_cache_lock = threading.Lock()
+
+
+def cached_series(folder: str) -> DicomSeries:
+    """
+    load_series(), cached per folder. Reconstruction, detection, the VR slice images and
+    the slice-image endpoint all need the same series; reading every header takes ~3 s
+    on a 1,400-file upload, and it used to happen three times per job. An upload folder
+    never changes after the upload; its modification time is part of the key anyway.
+    Raises FileNotFoundError like load_series (also for a deleted folder).
+    """
+    try:
+        key = (os.path.abspath(folder), os.stat(folder).st_mtime_ns)
+    except OSError as exc:
+        raise FileNotFoundError(folder) from exc
+    with _series_cache_lock:
+        cached = _series_cache.get(key)
+    if cached is None:
+        cached = load_series(folder)
+        with _series_cache_lock:
+            if len(_series_cache) >= 8:
+                _series_cache.pop(next(iter(_series_cache)))
+            _series_cache[key] = cached
+    return cached
 
 
 def safe_relative_path(name: str) -> Optional[str]:

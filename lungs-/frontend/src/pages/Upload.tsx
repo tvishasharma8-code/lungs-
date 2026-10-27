@@ -77,7 +77,7 @@ export default function Upload() {
             </svg>
           </button>
           <p className="mt-2 text-center text-[11px] text-slate-600">
-            You can run either analysis independently — both are not required.
+            If one part fails (e.g. the 3D model), the rest is still shown.
           </p>
         </div>
       </main>

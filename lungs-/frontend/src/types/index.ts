@@ -82,6 +82,8 @@ export interface ResultsResponse {
   job_id: string;
   reconstruction: ReconstructionResult | null;
   abnormality: AbnormalityResult | null;
+  /** Parts of the job that failed while the rest completed. */
+  warnings?: string[];
 }
 
 /** A patient kept for the VR app ("Send to VR"), from GET /api/vr/patients. */

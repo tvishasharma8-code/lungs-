@@ -22,7 +22,9 @@ class AnalysisType(str, Enum):
     @property
     def wants_reconstruction(self) -> bool:
         # Abnormality detection also builds the lung, so the web page can show
-        # each tumor on the patient's 3D lung (and tumors get their lobe).
+        # each tumor on the patient's 3D lung (and tumors get their lobe). That makes
+        # BOTH the same as ABNORMALITY; it stays accepted for older clients, the
+        # website no longer offers it.
         return self in (AnalysisType.RECONSTRUCTION, AnalysisType.ABNORMALITY, AnalysisType.BOTH)
 
     @property
@@ -134,3 +136,6 @@ class ResultsResponse(BaseModel):
     job_id: str
     reconstruction: Optional[ReconstructionResult] = None
     abnormality: Optional[AbnormalityResult] = None
+    # Parts of the job that failed while the rest completed, e.g.
+    # "3D reconstruction failed: TotalSegmentator exited with code 1 ..."
+    warnings: list[str] = []

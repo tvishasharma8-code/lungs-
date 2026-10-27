@@ -7,7 +7,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:8000",
+        // The address uvicorn is started on (--host 127.0.0.1); "localhost" can resolve
+        // to ::1 first, where nothing listens.
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
       },
     },

@@ -51,7 +51,7 @@ import torchvision
 from PIL import Image
 from pydicom import dcmread
 
-from pipeline.dicom_series import load_series
+from pipeline.dicom_series import cached_series
 
 # Filename matches what the team currently hands off. If a future
 # retrain produces a differently-named file, either rename it to this
@@ -63,8 +63,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 _model: Optional[torch.nn.Module] = None
 _model_lock = threading.Lock()
-_series_cache: dict[tuple, list[str]] = {}
-_series_cache_lock = threading.Lock()
 
 
 @dataclass
@@ -155,26 +153,13 @@ def list_series_files(dicom_dir: str) -> list[str]:
     to. (It used to sort by file name, which is not body order on many
     exports and disagreed with the ML team's Unity tumor server.)
 
-    Cached per folder: reading every header takes ~3 s on a 1,400-file upload, and the
-    results page asks for a slice image per finding (up to ~30). An upload folder never
-    changes after the upload; the folder's modification time is part of the key anyway.
+    Cached per folder (dicom_series.cached_series): the results page asks for a slice
+    image per finding (up to ~30), and the job itself already read the headers.
     """
     try:
-        key = (os.path.abspath(dicom_dir), os.stat(dicom_dir).st_mtime_ns)
-    except OSError:
+        return cached_series(dicom_dir).paths
+    except FileNotFoundError:
         return []
-    with _series_cache_lock:
-        cached = _series_cache.get(key)
-    if cached is None:
-        try:
-            cached = load_series(dicom_dir).paths
-        except FileNotFoundError:
-            return []
-        with _series_cache_lock:
-            if len(_series_cache) >= 8:
-                _series_cache.pop(next(iter(_series_cache)))
-            _series_cache[key] = cached
-    return list(cached)  # a deleted upload fails os.stat above
 
 
 def scan_indices(series, step_mm: float, max_slices: int) -> tuple[list[int], float]:
@@ -252,7 +237,7 @@ def run_inference_on_series(
     """
     model = _load_model()
     try:
-        series = load_series(dicom_dir)
+        series = cached_series(dicom_dir)  # usually already read by the reconstruction
     except FileNotFoundError:
         return SeriesScan([], 0, [], slice_step_mm, False, {})
 

@@ -23,6 +23,9 @@ export default function PipelineProgressList({ pipeline }: { pipeline: PipelineP
               {step.detail && step.status === "running" && (
                 <p className="mt-0.5 truncate text-xs text-slate-500">{step.detail}</p>
               )}
+              {step.detail && step.status === "failed" && (
+                <p className="mt-0.5 text-xs text-red-400/80">{step.detail}</p>
+              )}
               {step.status === "running" && (
                 <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/5">
                   <div
