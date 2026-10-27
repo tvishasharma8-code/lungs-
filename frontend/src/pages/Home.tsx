@@ -34,7 +34,7 @@ export default function Home() {
                 desc="Generate accurate 3D lung models from CT scans as STL files."
               />
               <FeatureCard
-                title="AI Abnormality Detection"
+                title="ML Tumor Detection"
                 desc="Detect and highlight potential abnormalities (mock pipeline for now)."
               />
               <FeatureCard

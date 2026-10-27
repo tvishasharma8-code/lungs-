@@ -3,11 +3,23 @@ import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-interface Props {
-  stlUrl: string;
+export interface ViewerMarker {
+  id: string;
+  /** DICOM patient coords (LPS, mm) - the same frame the backend writes the STL in. */
+  position: [number, number, number];
+  /** true = inside a lobe (red), false = outside the lungs / likely false alarm (amber) */
+  inLung: boolean;
+  /** sphere radius in mm */
+  radiusMm: number;
 }
 
-export default function STLViewer({ stlUrl }: Props) {
+interface Props {
+  stlUrl: string;
+  /** Optional tumor markers. When given, the lung is drawn see-through. */
+  markers?: ViewerMarker[];
+}
+
+export default function STLViewer({ stlUrl, markers }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -55,17 +67,44 @@ export default function STLViewer({ stlUrl }: Props) {
       stlUrl,
       (geometry) => {
         geometry.computeVertexNormals();
+        // Remember the centre BEFORE centering, so tumor markers (in the
+        // STL's original LPS mm coordinates) can be shifted the same way.
+        geometry.computeBoundingBox();
+        const offset = new THREE.Vector3();
+        geometry.boundingBox?.getCenter(offset);
         geometry.center();
 
+        const hasMarkers = !!markers && markers.length > 0;
         const material = new THREE.MeshStandardMaterial({
           color: 0xd88c7a,
           metalness: 0.05,
           roughness: 0.55,
           flatShading: false,
+          transparent: hasMarkers,
+          opacity: hasMarkers ? 0.35 : 1,
+          depthWrite: !hasMarkers,
         });
         mesh = new THREE.Mesh(geometry, material);
         mesh.rotation.x = -Math.PI / 2;
         scene.add(mesh);
+
+        markers?.forEach((m) => {
+          const sphere = new THREE.Mesh(
+            new THREE.SphereGeometry(m.radiusMm, 32, 16),
+            new THREE.MeshStandardMaterial({
+              color: m.inLung ? 0xff2020 : 0xffa53d,
+              emissive: m.inLung ? 0x991010 : 0x7a4a10,
+              roughness: 0.4,
+            })
+          );
+          sphere.position.set(
+            m.position[0] - offset.x,
+            m.position[1] - offset.y,
+            m.position[2] - offset.z
+          );
+          sphere.renderOrder = 1;
+          mesh!.add(sphere); // child of the lung -> same rotation as the lung
+        });
 
         geometry.computeBoundingSphere();
         const sphere = geometry.boundingSphere;
@@ -115,11 +154,16 @@ export default function STLViewer({ stlUrl }: Props) {
       resizeObserver.disconnect();
       controls.dispose();
       renderer.dispose();
+      mesh?.children.forEach((c) => {
+        const s = c as THREE.Mesh;
+        s.geometry?.dispose();
+        (s.material as THREE.Material)?.dispose();
+      });
       mesh?.geometry.dispose();
       if (mesh?.material) (mesh.material as THREE.Material).dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [stlUrl]);
+  }, [stlUrl, markers]);
 
   const resetView = () => {
     const controls = controlsRef.current;

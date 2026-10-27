@@ -9,7 +9,7 @@ const OPTIONS: { id: AnalysisType; title: string; desc: string; icon: JSX.Elemen
   },
   {
     id: "abnormality",
-    title: "AI Abnormality Detection",
+    title: "ML Tumor Detection",
     desc: "Flag potential regions of interest on CT slices. Currently uses mock output.",
     icon: <ScanIcon />,
   },

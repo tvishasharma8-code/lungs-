@@ -56,10 +56,10 @@ class Job:
         if analysis_type.wants_abnormality:
             self.pipelines["abnormality"] = PipelineProgress(
                 key="abnormality",
-                label="AI Abnormality Detection Pipeline",
+                label="ML Tumor Detection Pipeline",
                 steps=[
                     StepProgress(id="ab_prepare", label="Preparing CT data"),
-                    StepProgress(id="ab_infer", label="Running AI model"),
+                    StepProgress(id="ab_infer", label="Running ML model"),
                     StepProgress(id="ab_overlay", label="Generating detection overlay"),
                 ],
             )

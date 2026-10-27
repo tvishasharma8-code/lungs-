@@ -21,7 +21,9 @@ class AnalysisType(str, Enum):
 
     @property
     def wants_reconstruction(self) -> bool:
-        return self in (AnalysisType.RECONSTRUCTION, AnalysisType.BOTH)
+        # Abnormality detection also builds the lung, so the web page can show
+        # each tumor on the patient's 3D lung (and tumors get their lobe).
+        return self in (AnalysisType.RECONSTRUCTION, AnalysisType.ABNORMALITY, AnalysisType.BOTH)
 
     @property
     def wants_abnormality(self) -> bool:

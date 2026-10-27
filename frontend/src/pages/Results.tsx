@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Header from "../components/Header";
-import STLViewer from "../components/STLViewer";
+import STLViewer, { type ViewerMarker } from "../components/STLViewer";
 import VRPanel from "../components/VRPanel";
 import { sliceImageUrl, stlDownloadUrl } from "../services/api"
 import { useSession } from "../services/SessionContext";
@@ -54,7 +54,7 @@ export default function Results() {
               3D Reconstruction
             </TabButton>
             <TabButton active={tab === "abnormality"} onClick={() => setTab("abnormality")}>
-              AI Abnormality Detection
+              ML Tumor Detection
             </TabButton>
           </div>
         )}
@@ -63,7 +63,11 @@ export default function Results() {
           <ReconstructionPanel stl={results.reconstruction} jobId={jobId} />
         )}
         {tab === "abnormality" && results.abnormality && (
-          <AbnormalityPanel result={results.abnormality} jobId={jobId} />
+          <AbnormalityPanel
+            result={results.abnormality}
+            jobId={jobId}
+            hasMesh={!!results.reconstruction}
+          />
         )}
       </main>
     </div>
@@ -152,12 +156,66 @@ function ReconstructionPanel({
 function AbnormalityPanel({
   result,
   jobId,
+  hasMesh,
 }: {
   result: import("../types").AbnormalityResult;
   jobId: string;
+  hasMesh: boolean;
 }) {
+  // Memoised so the 3D viewer doesn't reload the mesh on every re-render.
+  const markers = useMemo<ViewerMarker[]>(
+    () =>
+      (result.tumors ?? [])
+        .filter((t) => t.center_mm)
+        .map((t) => ({
+          id: t.id,
+          position: t.center_mm as [number, number, number],
+          inLung: t.location !== "outside the lungs",
+          // Sphere with the SAME VOLUME as the backend's estimate (tumor_cluster.py:
+          // an ellipse inside each slice's box x slice thickness). An estimate from
+          // detection boxes - shown as "approx." in the legend.
+          radiusMm:
+            t.volume_mm3 && t.volume_mm3 > 0
+              ? Math.min(40, Math.max(3, Math.cbrt((3 * t.volume_mm3) / (4 * Math.PI))))
+              : 7,
+        })),
+    [result.tumors]
+  );
+  const inLungCount = markers.filter((m) => m.inLung).length;
+
   return (
     <div className="flex flex-col gap-5">
+      {hasMesh && (
+        <div className="panel flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+            <p className="font-display text-sm font-medium text-slate-200">
+              Tumor Location on 3D Lung
+            </p>
+            <span className="rounded-full bg-red-500/15 px-2.5 py-1 text-[11px] text-red-400">
+              {markers.length === 0
+                ? "No tumor found"
+                : `${inLungCount} in lung · ${markers.length - inLungCount} outside`}
+            </span>
+          </div>
+          <div className="h-[440px] w-full bg-[radial-gradient(circle_at_center,rgba(139,92,246,0.08),transparent_60%)]">
+            <STLViewer stlUrl={stlDownloadUrl(jobId)} markers={markers} />
+          </div>
+          <p className="border-t border-white/5 px-5 py-2 text-[11px] text-slate-500">
+            Red = tumor inside a lung lobe · Amber = outside the lung outline (may be a false alarm).
+            Sphere size = approx. tumor volume, estimated from the detection boxes
+            {markers.length > 0 && (
+              <>
+                {" "}(
+                {markers
+                  .map((m) => `${m.id} ≈ ${((m.radiusMm * 2) / 10).toFixed(1)} cm`)
+                  .join(", ")}
+                )
+              </>
+            )}
+            .
+          </p>
+        </div>
+      )}
       {result.mock ? (
         <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-xs text-amber-300">
           Mock output — this pipeline uses simulated findings until the team's trained model is
@@ -165,7 +223,7 @@ function AbnormalityPanel({
         </div>
       ) : (
         <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-xs text-amber-300">
-          AI-assisted detection output — for research/demo purposes only. Not a clinical
+          ML-based detection output — for research/demo purposes only. Not a clinical
           diagnosis; always confirm findings with a qualified radiologist.
         </div>
       )}
@@ -175,7 +233,7 @@ function AbnormalityPanel({
         <p className="mt-2 text-sm text-slate-400">{result.summary}</p>
         <p className="mt-1 text-xs text-slate-600">
           {result.scanned_slices
-            ? `Scanned ${result.scanned_slices} of ${result.total_slices} slices (about every 2.5 mm).`
+            ? `Scanned ${result.scanned_slices} of ${result.total_slices} slices.`
             : `Scanned ${result.total_slices} slices.`}
         </p>
       </div>

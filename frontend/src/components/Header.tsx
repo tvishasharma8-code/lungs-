@@ -12,7 +12,7 @@ export default function Header({ step }: { step?: number }) {
           </span>
           <div className="leading-tight">
             <p className="font-display text-[15px] font-semibold text-slate-100">LungVision</p>
-            <p className="text-[11px] text-slate-500">CT → 3D Lung Reconstruction &amp; AI Analysis</p>
+            <p className="text-[11px] text-slate-500">CT → 3D Lung Reconstruction &amp; ML Analysis</p>
           </div>
         </Link>
         {step && <Stepper current={step} />}

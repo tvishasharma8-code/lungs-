@@ -30,8 +30,8 @@ from services.progress_service import Job
 PIPELINE_KEY = "abnormality"
 
 CONFIDENCE_THRESHOLD = 0.5
-SLICE_STEP_MM = 2.5         # scan about one slice per this many mm, over the whole series
-MAX_SLICES = 300            # widen the step rather than scan more than this
+SLICE_STEP_MM = 0.0         # 0 = scan EVERY slice (set e.g. 2.5 to scan one slice per 2.5 mm, faster)
+MAX_SLICES = 0              # 0 = no cap
 MAX_FINDINGS_RETURNED = 25  # keep the per-slice list readable in the UI
 
 

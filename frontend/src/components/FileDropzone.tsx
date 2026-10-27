@@ -13,12 +13,18 @@ async function readEntry(entry: any, out: File[]): Promise<void> {
     const file: File = await new Promise((resolve, reject) => entry.file(resolve, reject));
     out.push(file);
   } else if (entry.isDirectory) {
+    // Chrome's readEntries() returns at most 100 entries per call, so keep
+    // calling it until it returns an empty batch - otherwise a 244-slice
+    // folder silently uploads only its first 100 files.
     const reader = entry.createReader();
-    const entries: any[] = await new Promise((resolve, reject) =>
-      reader.readEntries(resolve, reject)
-    );
-    for (const child of entries) {
-      await readEntry(child, out);
+    while (true) {
+      const batch: any[] = await new Promise((resolve, reject) =>
+        reader.readEntries(resolve, reject)
+      );
+      if (batch.length === 0) break;
+      for (const child of batch) {
+        await readEntry(child, out);
+      }
     }
   }
 }

@@ -189,6 +189,16 @@ def scan_indices(series, step_mm: float, max_slices: int) -> tuple[list[int], fl
     n = len(series.slices)
     if n == 0:
         return [], step_mm
+    if step_mm <= 0 and max_slices <= 0:
+        # Scan every slice. Report the real median slice spacing as the step,
+        # since tumor_cluster.py uses it as a fallback slab thickness / z spacing.
+        if series.has_geometry and n > 1:
+            z = np.array([float(s.position[2]) for s in series.slices])
+            gaps = np.abs(np.diff(z))
+            spacing = float(np.median(gaps[gaps > 0])) if np.any(gaps > 0) else 1.0
+        else:
+            spacing = 1.0
+        return list(range(n)), spacing
     if not series.has_geometry:
         stride = max(1, int(np.ceil(n / max(1, max_slices))))
         return list(range(0, n, stride)), float(stride)
