@@ -35,7 +35,7 @@ export default function Home() {
               />
               <FeatureCard
                 title="ML Tumor Detection"
-                desc="Detect and highlight potential abnormalities (mock pipeline for now)."
+                desc="Find possible tumors with the team's Faster R-CNN model and show them on the 3D lung."
               />
               <FeatureCard
                 title="VR Visualization"

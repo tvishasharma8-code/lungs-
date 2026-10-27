@@ -185,36 +185,35 @@ def scan_indices(series, step_mm: float, max_slices: int) -> tuple[list[int], fl
     were never looked at.) Uses each slice's real position, since spacing can change
     within a series (A0265: 0.7 mm, then gaps of 5-21 mm at the bottom). If that would
     be more than `max_slices`, the step widens instead.
+    step_mm <= 0 scans every slice; max_slices <= 0 means no cap.
     """
     n = len(series.slices)
     if n == 0:
         return [], step_mm
-    if step_mm <= 0 and max_slices <= 0:
-        # Scan every slice. Report the real median slice spacing as the step,
-        # since tumor_cluster.py uses it as a fallback slab thickness / z spacing.
-        if series.has_geometry and n > 1:
-            z = np.array([float(s.position[2]) for s in series.slices])
-            gaps = np.abs(np.diff(z))
-            spacing = float(np.median(gaps[gaps > 0])) if np.any(gaps > 0) else 1.0
-        else:
-            spacing = 1.0
-        return list(range(n)), spacing
+    # step_mm <= 0: every slice; max_slices <= 0: no cap. Independent - either alone
+    # used to hang (a zero step can't be widened) or divide by zero.
+    cap = max_slices if max_slices > 0 else n
     if not series.has_geometry:
-        stride = max(1, int(np.ceil(n / max(1, max_slices))))
+        stride = max(1, int(np.ceil(n / cap)))
         return list(range(0, n, stride)), float(stride)
 
     z = [float(s.position[2]) for s in series.slices]
+    gaps = np.abs(np.diff(z))
+    # The real (median) slice spacing - reported as the step when scanning every slice,
+    # since tumor_cluster.py uses the step as a fallback slab thickness / z spacing.
+    spacing = float(np.median(gaps[gaps > 0])) if np.any(gaps > 0) else 1.0
+    step = max(0.0, step_mm)
     while True:
         indices = [0]
         for i in range(1, n):
-            if abs(z[i] - z[indices[-1]]) >= step_mm - 1e-6:
+            if abs(z[i] - z[indices[-1]]) >= step - 1e-6:
                 indices.append(i)
-        if len(indices) <= max_slices:
+        if len(indices) <= cap:
             break
-        step_mm *= len(indices) / max_slices
+        step = max(step, spacing) * len(indices) / cap
     if indices[-1] != n - 1:
         indices.append(n - 1)
-    return indices, step_mm
+    return indices, (step if step > 0 else spacing)
 
 
 def slab_thickness(series, indices: list[int]) -> dict[int, float]:

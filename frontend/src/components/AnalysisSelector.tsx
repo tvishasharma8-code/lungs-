@@ -10,7 +10,7 @@ const OPTIONS: { id: AnalysisType; title: string; desc: string; icon: JSX.Elemen
   {
     id: "abnormality",
     title: "ML Tumor Detection",
-    desc: "Flag potential regions of interest on CT slices. Currently uses mock output.",
+    desc: "Find possible tumors on the CT slices with the team's Faster R-CNN model and show them on the 3D lung.",
     icon: <ScanIcon />,
   },
   {
