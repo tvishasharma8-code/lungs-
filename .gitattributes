@@ -1,0 +1,37 @@
+# Normalise line endings: text is stored with LF, checked out as the platform likes.
+* text=auto
+
+# Scripts that must keep their line endings
+*.sh    text eol=lf
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+
+# Unity YAML (scenes, prefabs, assets, metas): text, merged with Unity's Smart Merge
+# when it is set up (git config merge.unityyamlmerge.driver ...), never auto-merged as
+# plain text into a broken scene.
+*.unity         text merge=unityyamlmerge
+*.prefab        text merge=unityyamlmerge
+*.asset         text merge=unityyamlmerge
+*.mat           text merge=unityyamlmerge
+*.anim          text merge=unityyamlmerge
+*.controller    text merge=unityyamlmerge
+*.physicMaterial text merge=unityyamlmerge
+*.meta          text merge=unityyamlmerge
+
+# Binary - never diffed, merged or line-ending converted
+*.dll   binary
+*.so    binary
+*.exe   binary
+*.fbx   binary
+*.png   binary
+*.jpg   binary
+*.tif   binary
+*.ttf   binary
+*.otf   binary
+*.wav   binary
+*.pdf   binary
+*.pth   binary
+*.bin   binary
+*.nii   binary
+*.gz    binary
+*.npz   binary

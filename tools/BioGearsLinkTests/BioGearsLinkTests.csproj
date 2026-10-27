@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Tests for the PC <-> Quest BioGears link, outside Unity.
+       dotnet run (no arguments)              -> self-test (server and client in one process)
+       dotnet run (with argument "headset")  -> fake headset: connects to a PC running the scene in Play mode -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>9.0</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\unity\Assets\LungVR\Scripts\Physiology\Link\BioGearsLink*.cs" />
+  </ItemGroup>
+</Project>
